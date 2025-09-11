@@ -31,7 +31,7 @@ def main(dataset_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(image_save_dir, exist_ok=True)
     json_path = os.path.join(output_dir, "Mini-o3-Coldstart.json")
-    
+
     dataset = load_dataset(dataset_path, split="train")
     dataset = dataset.add_column("idx", list(range(len(dataset))))
 
