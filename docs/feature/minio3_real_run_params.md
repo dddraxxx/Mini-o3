@@ -46,10 +46,13 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | `LOG_PROB_MICRO_BATCH_SIZE_PER_GPU` | `8` | `16` |
 | `REF_LOG_PROB_MICRO_BATCH_SIZE_PER_GPU` | `8` | `16` |
 | `ROLLOUT_N` | `8` | `8` |
+| `ROLLOUT_TP` | `1` | `1` |
+| `ROLLOUT_DP` | `8` | `1` |
+| `ROLLOUT_VLLM_EXECUTOR_BACKEND` | `uni` | unset |
 | `ROLLOUT_GPU_MEM_UTIL` | `0.9` | `0.9` |
 | `ROLLOUT_FREE_CACHE_ENGINE` | `True` | `True` |
 | `MAX_NUM_BATCHED_TOKENS` | `32768` | `32768` |
-| `MAX_NUM_SEQS` | `32` | `256` |
+| `MAX_NUM_SEQS` | `128` | `256` |
 | `SAVE_FREQ` | `10` | `10` |
 | `SAVE_LORA_ONLY` | `True` | `True` |
 | actor/ref offload | enabled | enabled |

@@ -36,9 +36,22 @@ REF_PARAM_OFFLOAD=${REF_PARAM_OFFLOAD:-True}
 
 LORA_RANK=${LORA_RANK:-8}
 LORA_ALPHA=${LORA_ALPHA:-16}
-LORA_TARGET_MODULES=${LORA_TARGET_MODULES:-all-linear}
+if [[ -z "${LORA_TARGET_MODULES:-}" ]]; then
+    case "${MODEL_PATH,,}" in
+        *qwen3.5*|*qwen3_5*)
+            # vLLM Qwen3.5 LoRA currently handles language modules only; avoid GDN fused projections.
+            LORA_TARGET_MODULES='.*model\.language_model\.layers\..*\.mlp\.(gate_proj|up_proj|down_proj)$'
+            ;;
+        *)
+            LORA_TARGET_MODULES=all-linear
+            ;;
+    esac
+fi
+MODEL_ATTN_IMPLEMENTATION=${MODEL_ATTN_IMPLEMENTATION:-flash_attention_2}
 
 ROLLOUT_TP=${ROLLOUT_TP:-1}
+ROLLOUT_DP=${ROLLOUT_DP:-1}
+ROLLOUT_VLLM_EXECUTOR_BACKEND=${ROLLOUT_VLLM_EXECUTOR_BACKEND:-}
 ROLLOUT_GPU_MEM_UTIL=${ROLLOUT_GPU_MEM_UTIL:-0.6}
 ROLLOUT_N=${ROLLOUT_N:-4}
 AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-32}
@@ -95,6 +108,7 @@ MODEL=(
     actor_rollout_ref.model.lora_rank=${LORA_RANK}
     actor_rollout_ref.model.lora_alpha=${LORA_ALPHA}
     "actor_rollout_ref.model.target_modules='${LORA_TARGET_MODULES}'"
+    +actor_rollout_ref.model.override_config.attn_implementation=${MODEL_ATTN_IMPLEMENTATION}
     actor_rollout_ref.model.use_remove_padding=True
     actor_rollout_ref.model.enable_gradient_checkpointing=True
 )
@@ -124,6 +138,7 @@ ROLLOUT=(
     actor_rollout_ref.rollout.name=vllm
     actor_rollout_ref.rollout.mode=async
     actor_rollout_ref.rollout.tensor_model_parallel_size=${ROLLOUT_TP}
+    actor_rollout_ref.rollout.data_parallel_size=${ROLLOUT_DP}
     actor_rollout_ref.rollout.gpu_memory_utilization=${ROLLOUT_GPU_MEM_UTIL}
     actor_rollout_ref.rollout.max_model_len=${MAX_MODEL_LEN}
     actor_rollout_ref.rollout.max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS}
@@ -152,6 +167,12 @@ ROLLOUT=(
     actor_rollout_ref.rollout.val_kwargs.max_assistant_turns=${VAL_MAX_ASSISTANT_TURNS}
     actor_rollout_ref.rollout.val_kwargs.max_user_turns=${VAL_MAX_USER_TURNS}
 )
+
+if [[ -n "${ROLLOUT_VLLM_EXECUTOR_BACKEND}" ]]; then
+    ROLLOUT+=(
+        +actor_rollout_ref.rollout.engine_kwargs.vllm.distributed_executor_backend=${ROLLOUT_VLLM_EXECUTOR_BACKEND}
+    )
+fi
 
 REF=(
     actor_rollout_ref.ref.fsdp_config.param_offload=${REF_PARAM_OFFLOAD}

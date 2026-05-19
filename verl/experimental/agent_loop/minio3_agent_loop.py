@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Any
 
 from verl.experimental.agent_loop.agent_loop import register
@@ -15,6 +16,11 @@ from verl.utils.profiler import simple_timer
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+
+def _stage_log(message: str) -> None:
+    if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
+        logger.warning("[minio3-stage] %s", message)
 
 
 @register("mini_o3_tool_agent")
@@ -36,6 +42,11 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
         return await super()._handle_generating_state(agent_data, turn_sampling_params, ignore_termination)
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
+        t0 = time.monotonic()
+        _stage_log(
+            f"minio3.pending.start request={agent_data.request_id[:8]} messages={len(agent_data.messages)} "
+            f"images={len(agent_data.image_data or [])}"
+        )
         prompt_ids = await self.apply_chat_template(
             agent_data.messages,
             tools=None,
@@ -45,12 +56,18 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
             mm_processor_kwargs=agent_data.mm_processor_kwargs,
         )
         agent_data.prompt_ids = prompt_ids
+        _stage_log(
+            f"minio3.pending.end request={agent_data.request_id[:8]} prompt_len={len(prompt_ids)} "
+            f"dt={time.monotonic() - t0:.3f}s"
+        )
         return AgentState.GENERATING
 
     async def _handle_processing_tools_state(self, agent_data: AgentData) -> AgentState:
         add_messages: list[dict[str, Any]] = []
         new_images_this_turn: list[Any] = []
 
+        t0 = time.monotonic()
+        _stage_log(f"minio3.tool.start request={agent_data.request_id[:8]} calls={len(agent_data.tool_calls)}")
         tasks = []
         for tool_call in agent_data.tool_calls[: self.max_parallel_calls]:
             tasks.append(self._call_tool(tool_call, agent_data.tools_kwargs, agent_data))
@@ -103,6 +120,10 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
         agent_data.user_turns += 1
+        _stage_log(
+            f"minio3.tool.end request={agent_data.request_id[:8]} new_images={len(new_images_this_turn)} "
+            f"obs_tokens={len(response_ids)} dt={time.monotonic() - t0:.3f}s"
+        )
         return AgentState.GENERATING
 
     @staticmethod

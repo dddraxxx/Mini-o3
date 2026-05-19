@@ -17,13 +17,22 @@ export GLOBAL_ACTIVE_TRAJECTORY_MAX=${GLOBAL_ACTIVE_TRAJECTORY_MAX:-$((GLOBAL_RE
 DATA_DIR=${DATA_DIR:-$PROJECT_DIR/data/minio3_real_train_a100}
 PROFILE=a100 DATA_DIR="$DATA_DIR" bash "$PROJECT_DIR/examples/minio3/prepare_real_train_data.sh"
 
+MODEL_PATH=${MODEL_PATH:-Mini-o3/Mini-o3-7B-SFT}
 if [[ -z "${LORA_TARGET_MODULES:-}" ]]; then
-    LORA_TARGET_MODULES='.*model\.layers\..*(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$'
+    case "${MODEL_PATH,,}" in
+        *qwen3.5*|*qwen3_5*)
+            # vLLM Qwen3.5 LoRA currently handles language modules only; avoid GDN fused projections.
+            LORA_TARGET_MODULES='.*model\.language_model\.layers\..*\.mlp\.(gate_proj|up_proj|down_proj)$'
+            ;;
+        *)
+            LORA_TARGET_MODULES='.*model\.layers\..*(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$'
+            ;;
+    esac
 fi
 export LORA_TARGET_MODULES
 
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7} \
-MODEL_PATH=${MODEL_PATH:-Mini-o3/Mini-o3-7B-SFT} \
+MODEL_PATH=${MODEL_PATH} \
 TRAIN_FILE=${TRAIN_FILE:-$DATA_DIR/train.parquet} \
 VAL_FILE=${VAL_FILE:-$DATA_DIR/val.parquet} \
 RUN_DIR=${RUN_DIR:-$PROJECT_DIR/save/lora_pyvision_style_a100} \
@@ -39,9 +48,11 @@ MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-16384} \
 VAL_RESPONSE_LENGTH=${VAL_RESPONSE_LENGTH:-32768} \
 MAX_MODEL_LEN=${MAX_MODEL_LEN:-40960} \
 ROLLOUT_TP=${ROLLOUT_TP:-1} \
+ROLLOUT_DP=${ROLLOUT_DP:-8} \
+ROLLOUT_VLLM_EXECUTOR_BACKEND=${ROLLOUT_VLLM_EXECUTOR_BACKEND:-uni} \
 ROLLOUT_GPU_MEM_UTIL=${ROLLOUT_GPU_MEM_UTIL:-0.9} \
 MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-32768} \
-MAX_NUM_SEQS=${MAX_NUM_SEQS:-32} \
+MAX_NUM_SEQS=${MAX_NUM_SEQS:-128} \
 ROLLOUT_N=${ROLLOUT_N:-8} \
 AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-32} \
 MAX_ASSISTANT_TURNS=${MAX_ASSISTANT_TURNS:-6} \

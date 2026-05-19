@@ -213,6 +213,95 @@ def _estimate_qwen3_vl_moe_flops(config, tokens_sum, batch_seqlens, delta_time, 
     return flops_achieved
 
 
+def _estimate_qwen3_5_flops(config, tokens_sum, batch_seqlens, delta_time, **kargs):
+    # Qwen3.5 wraps the language model config under text_config and may include
+    # a vision tower on the top-level config.
+    text_config = getattr(config, "text_config", config)
+
+    hidden_size = text_config.hidden_size
+    vocab_size = text_config.vocab_size
+    num_hidden_layers = text_config.num_hidden_layers
+    num_key_value_heads = text_config.num_key_value_heads
+    num_attention_heads = text_config.num_attention_heads
+    intermediate_size = text_config.intermediate_size
+
+    head_dim = getattr(text_config, "head_dim", hidden_size // num_attention_heads)
+    q_size = num_attention_heads * head_dim
+    k_size = num_key_value_heads * head_dim
+    v_size = num_key_value_heads * head_dim
+
+    mlp_N = hidden_size * intermediate_size * 3
+    full_attn_linear_N = hidden_size * (q_size + k_size + v_size + num_attention_heads * head_dim)
+
+    linear_key_heads = getattr(text_config, "linear_num_key_heads", num_key_value_heads)
+    linear_value_heads = getattr(text_config, "linear_num_value_heads", num_attention_heads)
+    linear_key_head_dim = getattr(text_config, "linear_key_head_dim", head_dim)
+    linear_value_head_dim = getattr(text_config, "linear_value_head_dim", head_dim)
+    linear_key_dim = linear_key_heads * linear_key_head_dim
+    linear_value_dim = linear_value_heads * linear_value_head_dim
+    linear_conv_dim = linear_key_dim * 2 + linear_value_dim
+    linear_conv_kernel_dim = getattr(text_config, "linear_conv_kernel_dim", 0)
+    linear_attn_N = (
+        hidden_size * linear_conv_dim
+        + hidden_size * linear_value_dim
+        + hidden_size * linear_value_heads * 2
+        + linear_conv_dim * linear_conv_kernel_dim
+        + linear_value_dim * hidden_size
+    )
+    emd_and_lm_head_N = vocab_size * hidden_size * 2
+
+    seqlen_square_sum = 0
+    full_attention_layers = 0
+    linear_attention_layers = 0
+    layer_types = getattr(text_config, "layer_types", None)
+    if layer_types:
+        for layer_type in layer_types:
+            if layer_type == "full_attention":
+                full_attention_layers += 1
+                for seqlen in batch_seqlens:
+                    seqlen_square_sum += seqlen * seqlen
+            elif layer_type == "linear_attention":
+                linear_attention_layers += 1
+            else:
+                full_attention_layers += 1
+                for seqlen in batch_seqlens:
+                    seqlen_square_sum += seqlen * seqlen
+    else:
+        full_attention_interval = getattr(text_config, "full_attention_interval", None)
+        if full_attention_interval:
+            for layer_idx in range(num_hidden_layers):
+                if (layer_idx + 1) % full_attention_interval == 0:
+                    full_attention_layers += 1
+                    for seqlen in batch_seqlens:
+                        seqlen_square_sum += seqlen * seqlen
+                else:
+                    linear_attention_layers += 1
+        else:
+            full_attention_layers = num_hidden_layers
+            for seqlen in batch_seqlens:
+                seqlen_square_sum += seqlen * seqlen
+            seqlen_square_sum *= num_hidden_layers
+
+    dense_N = (
+        (mlp_N + full_attn_linear_N) * full_attention_layers
+        + (mlp_N + linear_attn_N) * linear_attention_layers
+        + emd_and_lm_head_N
+    )
+    dense_N_flops = 6 * dense_N * tokens_sum
+    attn_qkv_flops = 6 * seqlen_square_sum * head_dim * num_attention_heads
+
+    images_seqlens = kargs.get("images_seqlens", None)
+    vision_config = getattr(config, "vision_config", None)
+    if images_seqlens is not None and vision_config is not None:
+        vit_flops = _estimate_qwen3_vit_flop(images_seqlens, vision_config)
+    else:
+        vit_flops = 0
+
+    flops_all_token = dense_N_flops + attn_qkv_flops + vit_flops
+    flops_achieved = flops_all_token * (1.0 / delta_time) / 1e12
+    return flops_achieved
+
+
 def _estimate_qwen3_vit_flop(images_seqlens, config):
     """
     Estimate the FLOPS of the vision encoder for Qwen3-VL
@@ -547,6 +636,7 @@ ESTIMATE_FUNC = {
     "qwen2_5_vl": _estimate_qwen3_vl_flops,
     "qwen3": _estimate_qwen2_flops,
     "qwen3_moe": _estimate_qwen2_moe_flops,
+    "qwen3_5": _estimate_qwen3_5_flops,
     "qwen3_vl": _estimate_qwen3_vl_flops,
     "qwen3_vl_moe": _estimate_qwen3_vl_moe_flops,
     "deepseek_v3": _estimate_deepseek_v3_flops,

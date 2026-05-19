@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import os
+import time
 from pprint import pprint
 from typing import Any, Callable, Optional
 
@@ -76,6 +77,11 @@ else:
 
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
+
+
+def _stage_log(message: str) -> None:
+    if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
+        logger.warning("[minio3-stage] %s", message)
 
 
 class vLLMHttpServer:
@@ -458,6 +464,7 @@ class vLLMHttpServer:
         priority: int = 0,
     ) -> TokenOutput:
         """Generate sequence with token-in-token-out."""
+        t0 = time.monotonic()
         prompt_ids = normalize_token_ids(prompt_ids)
 
         # Calculate the maximum possible new tokens based on available context space
@@ -492,6 +499,10 @@ class vLLMHttpServer:
         sampling_params["logprobs"] = 0 if sampling_params.pop("logprobs", False) else None
         sampling_params.setdefault("repetition_penalty", self.config.get("repetition_penalty", 1.0))
         sampling_params = SamplingParams(max_tokens=max_tokens, **sampling_params)
+        _stage_log(
+            f"server.generate.start replica={self.replica_rank} request={request_id[:8]} "
+            f"prompt_len={len(prompt_ids)} max_tokens={max_tokens} images={len(image_data or [])}"
+        )
         prompt_ids = qwen2_5_vl_dedup_image_tokens(prompt_ids, self.model_config.processor)
         multi_modal_data = {}
         if image_data is not None:
@@ -573,6 +584,11 @@ class vLLMHttpServer:
         if hasattr(final_res.outputs[0], "num_preempted"):
             num_preempted = final_res.outputs[0].num_preempted
 
+        _stage_log(
+            f"server.generate.end replica={self.replica_rank} request={request_id[:8]} "
+            f"tokens={len(token_ids)} finish={finish_reason} lora={lora_request is not None} "
+            f"dt={time.monotonic() - t0:.3f}s"
+        )
         return TokenOutput(
             token_ids=token_ids,
             log_probs=log_probs,

@@ -18,7 +18,17 @@ import pytest
 
 from verl.utils.flops_counter import FlopsCounter
 
-VALID_CONFIG_TYPE = {"llama", "qwen2", "qwen3", "qwen3_moe", "deepseek_v3", "mistral", "gemma3_text", "apertus"}
+VALID_CONFIG_TYPE = {
+    "llama",
+    "qwen2",
+    "qwen3",
+    "qwen3_5",
+    "qwen3_moe",
+    "deepseek_v3",
+    "mistral",
+    "gemma3_text",
+    "apertus",
+}
 
 
 class Config:
@@ -109,6 +119,74 @@ CONFIG = {
         # 6*(151936*2048*2+48*(2048*(128*32+128*4*2+128*32)+2048*768*8*3+2048*128))*(4096+4096+4096) +
         # 6*(4096*4096+4096*4096+4096*4096)*48*128*32
         "expected_flops_tuple": (78593069678592 / 1e12, 306570470621184 / 1e12),
+    },
+    "qwen3_5": {
+        "config": {  # Qwen/Qwen3.5-9B
+            "model_type": "qwen3_5",
+            "text_config": {
+                "vocab_size": 248320,
+                "hidden_size": 4096,
+                "intermediate_size": 12288,
+                "num_hidden_layers": 32,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 4,
+                "head_dim": 256,
+                "linear_conv_kernel_dim": 4,
+                "linear_key_head_dim": 128,
+                "linear_num_key_heads": 16,
+                "linear_num_value_heads": 32,
+                "linear_value_head_dim": 128,
+                "layer_types": [
+                    "linear_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "full_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "full_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "full_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "full_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "full_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "full_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "full_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "linear_attention",
+                    "full_attention",
+                ],
+            },
+            "vision_config": {
+                "deepstack_visual_indexes": [],
+                "num_heads": 16,
+                "depth": 27,
+                "hidden_size": 1152,
+                "intermediate_size": 4304,
+                "out_hidden_size": 4096,
+                "spatial_merge_size": 2,
+                "temporal_patch_size": 2,
+                "in_channels": 3,
+                "patch_size": 16,
+            },
+        },
+        "batch_seqlens_tuple": ([512, 1024, 2048], [4096, 4096, 4096]),
+        "images_seqlens_tuple": ([512, 1024, 2048], [4096, 4096, 4096]),
+        "expected_flops_tuple": (202527719030784 / 1e12, 712306870714368 / 1e12),
     },
     "deepseek_v3": {
         "config": {  # deepseek-ai/DeepSeek-Prover-V2-671B
@@ -441,6 +519,7 @@ CONFIG = {
         "llama",
         "qwen2",
         "qwen3",
+        "qwen3_5",
         "qwen3_moe",
         "deepseek_v3",
         "mistral",

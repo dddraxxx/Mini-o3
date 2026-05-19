@@ -31,6 +31,7 @@ import asyncio
 import logging
 import os
 import random
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 from uuid import uuid4
@@ -74,6 +75,11 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 DEFAULT_ROUTING_CACHE_SIZE = 10000
+
+
+def _stage_log(message: str) -> None:
+    if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
+        logger.warning("[minio3-stage] %s", message)
 
 
 class AgentLoopMetrics(BaseModel):
@@ -545,6 +551,11 @@ class AgentLoopWorker:
         # Do not forward it to concrete agent loops, which may reject unknown kwargs.
         per_sample_do_sample = batch.non_tensor_batch.get("__do_sample__")
         tasks = []
+        _stage_log(
+            f"worker.batch.start pid={os.getpid()} batch={len(batch)} validate={validate} "
+            f"rollout_n={config.n}"
+        )
+        t0 = time.monotonic()
         for i in range(len(batch)):
             trace_this_sample = i in traced_indices
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items() if k != "__do_sample__"}
@@ -557,6 +568,9 @@ class AgentLoopWorker:
                 )
             )
         outputs = await asyncio.gather(*tasks)
+        _stage_log(
+            f"worker.batch.end pid={os.getpid()} batch={len(batch)} dt={time.monotonic() - t0:.3f}s"
+        )
 
         output = self._postprocess(
             outputs, input_non_tensor_batch=batch.non_tensor_batch, validate=batch.meta_info.get("validate", False)
@@ -584,6 +598,11 @@ class AgentLoopWorker:
                 f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
             )
 
+            t0 = time.monotonic()
+            _stage_log(
+                f"trajectory.start pid={os.getpid()} sample={trajectory['sample_index']} "
+                f"rollout={trajectory['rollout_n']} validate={trajectory['validate']} agent={agent_name}"
+            )
             agent_loop_config = _agent_loop_registry[agent_name]
             agent_loop = hydra.utils.instantiate(
                 config=agent_loop_config,
@@ -598,6 +617,11 @@ class AgentLoopWorker:
             if trajectory["validate"]:
                 self._apply_validate_overrides(agent_loop)
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
+            _stage_log(
+                f"trajectory.end pid={os.getpid()} sample={trajectory['sample_index']} "
+                f"rollout={trajectory['rollout_n']} response_len={len(output.response_ids)} "
+                f"turns={output.num_turns} dt={time.monotonic() - t0:.3f}s"
+            )
             return await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
 
     async def _agent_loop_postprocess(self, output, validate, **kwargs) -> _InternalAgentLoopOutput:

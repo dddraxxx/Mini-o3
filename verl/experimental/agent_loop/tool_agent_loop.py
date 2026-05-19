@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from enum import Enum
 from typing import Any, Optional
 from uuid import uuid4
@@ -38,6 +39,11 @@ from verl.workers.rollout.replica import TokenOutput
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+
+def _stage_log(message: str) -> None:
+    if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
+        logger.warning("[minio3-stage] %s", message)
 
 
 class AgentState(Enum):
@@ -202,6 +208,11 @@ class ToolAgentLoop(AgentLoopBase):
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
         """Handle the pending state: prepare the prompt and start generation."""
         schemas = getattr(agent_data, "_active_tool_schemas", self.tool_schemas)
+        t0 = time.monotonic()
+        _stage_log(
+            f"pending.start request={agent_data.request_id[:8]} messages={len(agent_data.messages)} "
+            f"images={len(agent_data.image_data or [])}"
+        )
         prompt_ids = await self.apply_chat_template(
             agent_data.messages,
             tools=schemas,
@@ -211,6 +222,10 @@ class ToolAgentLoop(AgentLoopBase):
             mm_processor_kwargs=agent_data.mm_processor_kwargs,
         )
         agent_data.prompt_ids = prompt_ids
+        _stage_log(
+            f"pending.end request={agent_data.request_id[:8]} prompt_len={len(prompt_ids)} "
+            f"dt={time.monotonic() - t0:.3f}s"
+        )
         return AgentState.GENERATING
 
     async def _handle_generating_state(
@@ -227,6 +242,12 @@ class ToolAgentLoop(AgentLoopBase):
         else:
             sampling_params["max_tokens"] = min(int(requested_max_tokens), remaining_tokens)
 
+        t0 = time.monotonic()
+        _stage_log(
+            f"generate.start request={agent_data.request_id[:8]} assistant_turn={agent_data.assistant_turns + 1} "
+            f"user_turns={agent_data.user_turns} prompt_len={len(agent_data.prompt_ids)} "
+            f"remaining={remaining_tokens} max_tokens={sampling_params['max_tokens']}"
+        )
         with simple_timer("generate_sequences", agent_data.metrics):
             output: TokenOutput = await self.server_manager.generate(
                 request_id=agent_data.request_id,
@@ -237,6 +258,10 @@ class ToolAgentLoop(AgentLoopBase):
                 audio_data=agent_data.audio_data,
                 mm_processor_kwargs=agent_data.mm_processor_kwargs,
             )
+        _stage_log(
+            f"generate.end request={agent_data.request_id[:8]} tokens={len(output.token_ids)} "
+            f"stop={output.stop_reason} dt={time.monotonic() - t0:.3f}s"
+        )
         # first time to set num_preempted
         if agent_data.metrics.get("num_preempted") is None:
             agent_data.metrics["num_preempted"] = output.num_preempted if output.num_preempted is not None else -1
@@ -285,6 +310,8 @@ class ToolAgentLoop(AgentLoopBase):
         add_messages: list[dict[str, Any]] = []
         new_images_this_turn: list[Any] = []  # Local variable instead of agent_data attribute
 
+        t0 = time.monotonic()
+        _stage_log(f"tool.start request={agent_data.request_id[:8]} calls={len(agent_data.tool_calls)}")
         tasks = []
         tool_call_names = []
         for tool_call in agent_data.tool_calls[: self.max_parallel_calls]:
@@ -381,6 +408,10 @@ class ToolAgentLoop(AgentLoopBase):
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
         agent_data.user_turns += 1
+        _stage_log(
+            f"tool.end request={agent_data.request_id[:8]} new_images={len(new_images_this_turn)} "
+            f"obs_tokens={len(response_ids)} dt={time.monotonic() - t0:.3f}s"
+        )
         return AgentState.GENERATING
 
     async def _call_tool(

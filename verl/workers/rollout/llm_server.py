@@ -21,6 +21,7 @@ Utility classes for manage and request LLM servers:
 import asyncio
 import logging
 import os
+import time
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -38,6 +39,11 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 DEFAULT_ROUTING_CACHE_SIZE = 10000
+
+
+def _stage_log(message: str) -> None:
+    if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
+        logger.warning("[minio3-stage] %s", message)
 
 
 @ray.remote
@@ -198,8 +204,18 @@ class LLMServerClient:
         Returns:
             TokenOutput | DiffusionOutput: token or diffusion output
         """
+        t0 = time.monotonic()
+        _stage_log(
+            f"client.acquire.start request={request_id[:8]} prompt_len={len(prompt_ids)} "
+            f"max_tokens={sampling_params.get('max_tokens', sampling_params.get('max_new_tokens'))}"
+        )
         server_id, server = await self._acquire_server(request_id)
+        _stage_log(
+            f"client.acquire.end request={request_id[:8]} server={server_id} "
+            f"dt={time.monotonic() - t0:.3f}s"
+        )
         try:
+            t_generate = time.monotonic()
             multimodal_kwargs = {}
             if audio_data is not None:
                 multimodal_kwargs["audio_data"] = audio_data
@@ -214,9 +230,14 @@ class LLMServerClient:
                 **multimodal_kwargs,
                 **kwargs,
             )
+            _stage_log(
+                f"client.generate.end request={request_id[:8]} server={server_id} "
+                f"tokens={len(output.token_ids)} dt={time.monotonic() - t_generate:.3f}s"
+            )
             return output
         finally:
             self._release_server(server_id)
+            _stage_log(f"client.release request={request_id[:8]} server={server_id}")
 
 
 class LLMServerManager:
