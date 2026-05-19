@@ -33,6 +33,20 @@ Summarize:
 uv run --active --no-sync python examples/minio3/summarize_run_metrics.py "$RUN_DIR"
 ```
 
+The summarizer also reads `run_logs/<run-name>.log` when present and extracts
+Mini-o3 stage-log load-balance samples:
+
+- `prompt_admission.load`: running prompt groups, total in-flight groups,
+  per-worker balance, and running age.
+- `worker.traj.running`: active trajectories inside each agent-loop worker.
+
+Set these when running throughput experiments that need load-balance evidence:
+
+```bash
+MINIO3_STAGE_LOG=1
+MINIO3_TRAJ_STATUS_INTERVAL_S=15
+```
+
 The monitor writes one JSON object per sampling tick. Each row includes:
 
 - wall-clock timestamp

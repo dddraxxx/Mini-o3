@@ -7,9 +7,27 @@ import argparse
 import csv
 import json
 import math
+import re
 import statistics
 from pathlib import Path
 from typing import Any
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+PROMPT_LOAD_RE = re.compile(
+    r"prompt_admission\.load reason=(?P<reason>\S+) "
+    r"running_groups=(?P<running_groups>\d+) "
+    r"total_inflight=(?P<total_inflight>\d+) "
+    r"max_worker_inflight=(?P<max_worker_inflight>\d+) "
+    r"worker_inflight=\[(?P<worker_inflight>[^\]]*)\] "
+    r"age_max_s=(?P<age_max_s>[0-9.]+)"
+)
+TRAJ_RUNNING_RE = re.compile(
+    r"worker\.traj\.running pid=(?P<pid>\d+) "
+    r"active=(?P<active>\d+)/(?P<total>\d+) "
+    r"age_max_s=(?P<age_max_s>[0-9.]+)"
+)
 
 
 def _jsonl(path: Path) -> list[dict[str, Any]]:
@@ -53,6 +71,26 @@ def _stats(values: list[float]) -> dict[str, float | int | None]:
         "p95": _percentile(values, 0.95),
         "max": max(values),
     }
+
+
+def _counts(values: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _clean_log_line(line: str) -> str:
+    return ANSI_RE.sub("", line).replace("\r", "")
+
+
+def _parse_int_list(value: str) -> list[int]:
+    out = []
+    for item in value.split(","):
+        item = item.strip()
+        if item:
+            out.append(int(item))
+    return out
 
 
 def _parse_percent(value: str) -> float:
@@ -128,6 +166,90 @@ def _gpu_summary(run_dir: Path, active_memory_mib: float) -> dict[str, Any]:
     }
 
 
+def _infer_log_path(run_dir: Path) -> Path | None:
+    launch_env = run_dir / "launch_env.txt"
+    if launch_env.exists():
+        for line in launch_env.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("LOG="):
+                path = Path(line.split("=", 1)[1])
+                if path.exists():
+                    return path
+
+    candidates = [
+        run_dir / "run.log",
+        PROJECT_DIR / "run_logs" / f"{run_dir.name}.log",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def _log_timeline_summary(run_dir: Path) -> dict[str, Any]:
+    log_path = _infer_log_path(run_dir)
+    prompt_rows: list[dict[str, Any]] = []
+    traj_rows: list[dict[str, Any]] = []
+    if log_path is None:
+        return {
+            "source": None,
+            "prompt_load": {},
+            "traj_active": {},
+        }
+
+    with log_path.open(encoding="utf-8", errors="replace") as f:
+        for line_no, raw_line in enumerate(f, start=1):
+            line = _clean_log_line(raw_line)
+            prompt_match = PROMPT_LOAD_RE.search(line)
+            if prompt_match:
+                inflight = _parse_int_list(prompt_match.group("worker_inflight"))
+                prompt_rows.append(
+                    {
+                        "line": line_no,
+                        "reason": prompt_match.group("reason"),
+                        "running_groups": int(prompt_match.group("running_groups")),
+                        "total_inflight": int(prompt_match.group("total_inflight")),
+                        "max_worker_inflight": int(prompt_match.group("max_worker_inflight")),
+                        "nonzero_workers": sum(1 for value in inflight if value > 0),
+                        "worker_count": len(inflight),
+                        "age_max_s": float(prompt_match.group("age_max_s")),
+                    }
+                )
+            traj_match = TRAJ_RUNNING_RE.search(line)
+            if traj_match:
+                active = int(traj_match.group("active"))
+                total = int(traj_match.group("total"))
+                traj_rows.append(
+                    {
+                        "line": line_no,
+                        "pid": int(traj_match.group("pid")),
+                        "active": active,
+                        "total": total,
+                        "active_ratio": active / total if total else 0.0,
+                        "age_max_s": float(traj_match.group("age_max_s")),
+                    }
+                )
+
+    return {
+        "source": str(log_path),
+        "prompt_load": {
+            "samples": len(prompt_rows),
+            "reason_counts": _counts([row["reason"] for row in prompt_rows]),
+            "running_groups": _stats([float(row["running_groups"]) for row in prompt_rows]),
+            "total_inflight": _stats([float(row["total_inflight"]) for row in prompt_rows]),
+            "max_worker_inflight": _stats([float(row["max_worker_inflight"]) for row in prompt_rows]),
+            "nonzero_workers": _stats([float(row["nonzero_workers"]) for row in prompt_rows]),
+            "age_max_s": _stats([float(row["age_max_s"]) for row in prompt_rows]),
+        },
+        "traj_active": {
+            "samples": len(traj_rows),
+            "active": _stats([float(row["active"]) for row in traj_rows]),
+            "total": _stats([float(row["total"]) for row in traj_rows]),
+            "active_ratio": _stats([float(row["active_ratio"]) for row in traj_rows]),
+            "age_max_s": _stats([float(row["age_max_s"]) for row in traj_rows]),
+        },
+    }
+
+
 def summarize_run(run_dir: Path, active_memory_mib: float) -> dict[str, Any]:
     metrics_rows = _jsonl(run_dir / "train_step_metrics.jsonl")
     metrics = _metric_data(metrics_rows[-1]) if metrics_rows else {}
@@ -162,6 +284,7 @@ def summarize_run(run_dir: Path, active_memory_mib: float) -> dict[str, Any]:
         "prompt_admission_lines": len(admission_rows),
         "metrics": selected,
         "gpu": _gpu_summary(run_dir, active_memory_mib),
+        "log_timeline": _log_timeline_summary(run_dir),
     }
 
 
@@ -181,6 +304,26 @@ def _print_text(summaries: list[dict[str, Any]]) -> None:
                 print(
                     f"  {label}: mean={stats['mean']:.2f} p50={stats['p50']:.2f} "
                     f"p95={stats['p95']:.2f} max={stats['max']:.2f} samples={stats['samples']}"
+                )
+        timeline = summary["log_timeline"]
+        print(f"  log_source: {timeline['source']}")
+        prompt = timeline["prompt_load"]
+        if prompt.get("samples"):
+            print(f"  prompt_load_samples: {prompt['samples']} reason_counts={prompt['reason_counts']}")
+            for label in ("running_groups", "total_inflight", "max_worker_inflight", "nonzero_workers", "age_max_s"):
+                stats = prompt[label]
+                print(
+                    f"  prompt_load/{label}: mean={stats['mean']:.2f} p50={stats['p50']:.2f} "
+                    f"p95={stats['p95']:.2f} max={stats['max']:.2f}"
+                )
+        traj = timeline["traj_active"]
+        if traj.get("samples"):
+            print(f"  traj_active_samples: {traj['samples']}")
+            for label in ("active", "total", "active_ratio", "age_max_s"):
+                stats = traj[label]
+                print(
+                    f"  traj_active/{label}: mean={stats['mean']:.2f} p50={stats['p50']:.2f} "
+                    f"p95={stats['p95']:.2f} max={stats['max']:.2f}"
                 )
 
 
