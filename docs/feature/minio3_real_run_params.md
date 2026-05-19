@@ -89,12 +89,15 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | prompt admission | enabled, std epsilon `1.0e-4`, state JSONL under `RUN_DIR` | same |
 | `SAVE_FREQ` | `10` | `10` |
 | `SAVE_LORA_ONLY` | `True` | `True` |
-| logging | `train_step_metrics.jsonl`, `rollout_generations/`, `validation_generations/`, `train_samples.jsonl` | same |
+| logging | `train_step_metrics.jsonl`, `rollout_generations/`, `validation_generations/`, `train_samples.jsonl`, `gpu_util.jsonl` | same |
 | actor/ref offload | enabled | enabled |
 | LoRA | rank `8`, alpha `16`, text-layer q/k/v/o/mlp regex | same |
 
 LoRA runs save `actor/lora_adapter/adapter_model.safetensors` plus optimizer and extra state by default. Set
 `SAVE_LORA_ONLY=False` only when a full sharded model checkpoint is needed.
+
+GPU util 采样默认写入 `gpu_util.jsonl`，汇总方式见
+[minio3_gpu_monitoring.md](minio3_gpu_monitoring.md)。
 
 `ROLLOUT_SKIP_VLLM_DUMMY_LORA=True` is an A100 DP=8 LoRA workaround for vLLM V1 spawn workers.
 The launch script adds the repo root to `PYTHONPATH`, and `sitecustomize.py` patches vLLM dummy

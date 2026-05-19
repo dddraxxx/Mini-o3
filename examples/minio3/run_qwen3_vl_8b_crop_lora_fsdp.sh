@@ -96,6 +96,11 @@ PROMPT_ADMISSION_REWARD_STD_EPSILON=${PROMPT_ADMISSION_REWARD_STD_EPSILON:-1.0e-
 PROMPT_ADMISSION_WAIT_TIMEOUT_S=${PROMPT_ADMISSION_WAIT_TIMEOUT_S:-0.1}
 PROMPT_ADMISSION_CANCEL_UNFINISHED=${PROMPT_ADMISSION_CANCEL_UNFINISHED:-True}
 PROMPT_ADMISSION_STATE_PATH=${PROMPT_ADMISSION_STATE_PATH:-}
+GPU_MONITOR_ENABLE=${GPU_MONITOR_ENABLE:-True}
+GPU_MONITOR_INTERVAL=${GPU_MONITOR_INTERVAL:-1.0}
+GPU_MONITOR_BACKEND=${GPU_MONITOR_BACKEND:-nvidia-smi}
+GPU_MONITOR_SAMPLE_TIMEOUT=${GPU_MONITOR_SAMPLE_TIMEOUT:-5.0}
+GPU_MONITOR_PATH=${GPU_MONITOR_PATH:-}
 
 PROJECT_NAME=${PROJECT_NAME:-minio3_official_verl}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-qwen3_vl_8b_crop_lora_$(date +%Y%m%d_%H%M)}
@@ -291,6 +296,27 @@ if [ -n "${TRAIN_SAMPLES_JSONL}" ]; then
         +trainer.train_samples_jsonl=${TRAIN_SAMPLES_JSONL}
         +trainer.train_samples_jsonl_limit=${TRAIN_SAMPLES_JSONL_LIMIT}
     )
+fi
+
+GPU_MONITOR_PID=
+stop_gpu_monitor() {
+    if [[ -n "${GPU_MONITOR_PID}" ]] && kill -0 "${GPU_MONITOR_PID}" 2>/dev/null; then
+        kill "${GPU_MONITOR_PID}" 2>/dev/null || true
+        wait "${GPU_MONITOR_PID}" 2>/dev/null || true
+    fi
+}
+trap stop_gpu_monitor EXIT
+
+if [[ -n "${RUN_DIR}" && ( "${GPU_MONITOR_ENABLE}" == "True" || "${GPU_MONITOR_ENABLE}" == "true" || "${GPU_MONITOR_ENABLE}" == "1" ) ]]; then
+    GPU_MONITOR_PATH=${GPU_MONITOR_PATH:-$RUN_DIR/gpu_util.jsonl}
+    mkdir -p "$(dirname "$GPU_MONITOR_PATH")"
+    "${PYTHON_CMD[@]}" "$PROJECT_DIR/examples/minio3/monitor_gpu_util.py" \
+        --output "$GPU_MONITOR_PATH" \
+        --interval "$GPU_MONITOR_INTERVAL" \
+        --backend "$GPU_MONITOR_BACKEND" \
+        --sample-timeout "$GPU_MONITOR_SAMPLE_TIMEOUT" \
+        >"${GPU_MONITOR_PATH}.log" 2>&1 &
+    GPU_MONITOR_PID=$!
 fi
 
 "${PYTHON_CMD[@]}" -m verl.trainer.main_ppo \

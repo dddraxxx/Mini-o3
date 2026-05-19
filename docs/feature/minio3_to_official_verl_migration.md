@@ -148,6 +148,8 @@ loss mask。还未迁移的是 official async server 上的 global ready-turn sc
 2026-05-19 已把 formal train logging 和旧 PyVision-style Mini-o3 对齐到可用状态。A100/H200 wrapper
 默认打开：
 
+GPU 采样和汇总见 [minio3_gpu_monitoring.md](minio3_gpu_monitoring.md)。
+
 ```bash
 LOGGER_BACKENDS='["console","wandb","file"]'
 VERL_FILE_LOGGER_PATH="$RUN_DIR/train_step_metrics.jsonl"
@@ -155,6 +157,8 @@ ROLLOUT_DATA_DIR="$RUN_DIR/rollout_generations"
 VALIDATION_DATA_DIR="$RUN_DIR/validation_generations"
 TRAIN_SAMPLES_JSONL="$RUN_DIR/train_samples.jsonl"
 TRAIN_SAMPLES_JSONL_LIMIT=16
+GPU_MONITOR_ENABLE=True
+GPU_MONITOR_PATH="$RUN_DIR/gpu_util.jsonl"
 ```
 
 对应产物：
@@ -165,6 +169,13 @@ TRAIN_SAMPLES_JSONL_LIMIT=16
 | `$RUN_DIR/rollout_generations/{step}.jsonl` | official verl rollout dump，已补 `uid`、`data_source`、`image_paths`。 |
 | `$RUN_DIR/validation_generations/{step}.jsonl` | official verl validation dump。 |
 | `$RUN_DIR/train_samples.jsonl` | 旧 Mini-o3 兼容 train sample append log，每 step 默认最多 16 条。 |
+| `$RUN_DIR/gpu_util.jsonl` | GPU util / memory 持续采样 JSONL。默认用 `nvidia-smi --query-*` 后端并加 per-sample timeout；不是单次 snapshot。 |
+
+汇总脚本：
+
+```bash
+uv run --active --no-sync python examples/minio3/summarize_run_metrics.py "$RUN_DIR"
+```
 
 `train_samples.jsonl` 不保存图片 bytes，只保存 image path 引用，格式保持旧版核心字段：
 
