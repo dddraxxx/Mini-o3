@@ -81,6 +81,9 @@ change and explain why**.
 - **Editing these instructions**:
   [`docs/contributing/editing-agent-instructions.md`](docs/contributing/editing-agent-instructions.md)
   — Rules for modifying AGENTS.md or any domain-specific guide it references.
+- **Mini-o3 real training or validation runs**:
+  [`docs/feature/minio3_real_run_params.md`](docs/feature/minio3_real_run_params.md)
+  — Real run token-budget and turn-count defaults; smoke runs may use shorter settings.
 
 ## Acknowledgements
 

@@ -217,6 +217,16 @@ class ToolAgentLoop(AgentLoopBase):
         self, agent_data: AgentData, sampling_params: dict[str, Any], ignore_termination: bool = False
     ) -> AgentState:
         """Handle the generating state: generate model response and check for tool calls."""
+        if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
+            return AgentState.TERMINATED
+        sampling_params = dict(sampling_params)
+        remaining_tokens = max(self.response_length - len(agent_data.response_mask), 0)
+        requested_max_tokens = sampling_params.pop("max_tokens", sampling_params.pop("max_new_tokens", None))
+        if requested_max_tokens is None:
+            sampling_params["max_tokens"] = remaining_tokens
+        else:
+            sampling_params["max_tokens"] = min(int(requested_max_tokens), remaining_tokens)
+
         with simple_timer("generate_sequences", agent_data.metrics):
             output: TokenOutput = await self.server_manager.generate(
                 request_id=agent_data.request_id,

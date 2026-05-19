@@ -161,6 +161,15 @@ val_kwargs:
   # Whether to sample during training rollout. False uses greedy sampling.
   do_sample: False
 
+  # Optional validation-only response budget. Null reuses rollout.response_length.
+  response_length: null
+
+  # Optional validation-only assistant turn cap. Null reuses multi_turn.max_assistant_turns.
+  max_assistant_turns: null
+
+  # Optional validation-only user/observation turn cap. Null reuses multi_turn.max_user_turns.
+  max_user_turns: null
+
 # Multi-turn tool config.
 multi_turn:
 

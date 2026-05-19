@@ -21,8 +21,9 @@ from .agent_loop import (
 )
 from .single_turn_agent_loop import SingleTurnAgentLoop
 from .tool_agent_loop import ToolAgentLoop
+from .minio3_agent_loop import MiniO3ToolAgentLoop
 
-_ = [SingleTurnAgentLoop, ToolAgentLoop]
+_ = [SingleTurnAgentLoop, ToolAgentLoop, MiniO3ToolAgentLoop]
 
 __all__ = [
     "AgentLoopBase",

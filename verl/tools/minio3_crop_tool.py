@@ -1,0 +1,129 @@
+# Copyright 2026 Mini-o3 contributors
+#
+# Licensed under the Apache License, Version 2.0.
+
+from __future__ import annotations
+
+from typing import Any
+
+from PIL import Image
+
+from verl.tools.base_tool import BaseTool
+from verl.tools.schemas import (
+    OpenAIFunctionParametersSchema,
+    OpenAIFunctionPropertySchema,
+    OpenAIFunctionSchema,
+    OpenAIFunctionToolSchema,
+    ToolResponse,
+)
+
+
+class MiniO3CropTool(BaseTool):
+    """Mini-o3 visual grounding crop tool for official verl AgentLoop."""
+
+    def get_openai_tool_schema(self) -> OpenAIFunctionToolSchema:
+        return OpenAIFunctionToolSchema(
+            type="function",
+            function=OpenAIFunctionSchema(
+                name="tool_crop",
+                description=(
+                    "Crop a region from the original image or a previous observation image. "
+                    "Coordinates are relative by default, matching Mini-o3 grounding format."
+                ),
+                parameters=OpenAIFunctionParametersSchema(
+                    type="object",
+                    properties={
+                        "bbox_2d": OpenAIFunctionPropertySchema(
+                            type="array",
+                            description="Bounding box [x0, y0, x1, y1].",
+                        ),
+                        "source": OpenAIFunctionPropertySchema(
+                            type="string",
+                            description="original_image or observation_i.",
+                        ),
+                    },
+                    required=["bbox_2d"],
+                ),
+            ),
+        )
+
+    async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
+        agent_data = kwargs.get("agent_data")
+        images = getattr(agent_data, "image_data", None)
+        if not images:
+            return ToolResponse(text="ERROR occurs during grounding. No image is available."), 0.0, {}
+
+        try:
+            image_index = self._resolve_source(parameters.get("source", "original_image"), len(images))
+            image = images[image_index]
+            if not isinstance(image, Image.Image):
+                raise TypeError(f"Expected PIL.Image.Image, got {type(image).__name__}")
+
+            bbox = self._resolve_bbox(parameters.get("bbox_2d"), image.size)
+            crop = self._crop_image(image, bbox)
+        except Exception as exc:
+            return (
+                ToolResponse(text=f"ERROR occurs during grounding. Error Information: {exc}.\n"),
+                0.0,
+                {"minio3_crop/error": str(exc)},
+            )
+
+        metrics = {
+            "minio3_crop/source_index": image_index,
+            "minio3_crop/x0": bbox[0],
+            "minio3_crop/y0": bbox[1],
+            "minio3_crop/x1": bbox[2],
+            "minio3_crop/y1": bbox[3],
+        }
+        return ToolResponse(text="Zoom-in observation.", image=[crop]), 0.0, metrics
+
+    @staticmethod
+    def _resolve_source(source: Any, num_images: int) -> int:
+        if source in (None, "", "original_image"):
+            return 0
+        if isinstance(source, int):
+            image_index = source
+        elif isinstance(source, str) and source.startswith("observation_"):
+            image_index = int(source.removeprefix("observation_"))
+        else:
+            raise ValueError(f"Unsupported source: {source!r}")
+
+        if image_index < 0 or image_index >= num_images:
+            raise ValueError(f"Source {source!r} is out of range for {num_images} image(s).")
+        return image_index
+
+    def _resolve_bbox(self, bbox: Any, image_size: tuple[int, int]) -> tuple[int, int, int, int]:
+        if not isinstance(bbox, list | tuple) or len(bbox) != 4:
+            raise ValueError(f"bbox_2d must be a list of four numbers, got {bbox!r}")
+
+        w, h = image_size
+        coords = [float(v) for v in bbox]
+        if self.config.get("use_relative_coordinates", True):
+            coords = [coords[0] * w, coords[1] * h, coords[2] * w, coords[3] * h]
+
+        x0, y0, x1, y1 = coords
+        x0 = max(0, min(int(x0), w - 1))
+        y0 = max(0, min(int(y0), h - 1))
+        x1 = max(1, min(int(x1), w))
+        y1 = max(1, min(int(y1), h))
+        if x0 >= x1 or y0 >= y1:
+            raise ValueError(f"Invalid bounding box after clamping: {[x0, y0, x1, y1]}")
+
+        width = x1 - x0
+        height = y1 - y0
+        max_aspect_ratio = float(self.config.get("max_aspect_ratio", 200.0))
+        if width / height > max_aspect_ratio or height / width > max_aspect_ratio:
+            raise ValueError(f"Bounding box aspect ratio is too large: {[x0, y0, x1, y1]}")
+
+        return x0, y0, x1, y1
+
+    def _crop_image(self, image: Image.Image, bbox: tuple[int, int, int, int]) -> Image.Image:
+        crop = image.crop(bbox)
+        resize = float(self.config.get("resize", 1.0))
+        min_crop_size = int(self.config.get("min_crop_size", 28))
+        target_w = max(int(crop.width * resize), min_crop_size)
+        target_h = max(int(crop.height * resize), min_crop_size)
+        if target_w == crop.width and target_h == crop.height:
+            return crop
+
+        return crop.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)

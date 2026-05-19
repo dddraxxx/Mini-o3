@@ -182,6 +182,15 @@ def nested_tensor_from_tensor_list(tensors: list[torch.Tensor], ragged_idx: int 
     return nested_tensor
 
 
+def _unbind_nested_tensor(tensor: torch.Tensor) -> list[torch.Tensor]:
+    """Unbind a jagged NestedTensor without relying on torch's unbind kernel."""
+    ragged_idx = getattr(tensor, "_ragged_idx", tensor.dim() - 1)
+    cat_dim = ragged_idx - 1
+    values = tensor.values()
+    offsets = tensor.offsets().detach().cpu().tolist()
+    return [values.narrow(cat_dim, offsets[i], offsets[i + 1] - offsets[i]) for i in range(len(offsets) - 1)]
+
+
 def concat_nested_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
     """Concatenate multiple nested tensors along the batch dimension.
 
@@ -211,8 +220,7 @@ def concat_nested_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
     unbind_tensors = []
     for tensor in tensors:
         assert len(tensor.shape) >= 2, f"nested tensor must have 2 or more dimensions. Got {tensor.shape}"
-        unbind_tensor = tensor.unbind(0)
-        unbind_tensors.extend(list(unbind_tensor))
+        unbind_tensors.extend(_unbind_nested_tensor(tensor))
 
     ragged_idx = getattr(tensors[0], "_ragged_idx", tensors[0].dim() - 1)
     return nested_tensor_from_tensor_list(unbind_tensors, ragged_idx=ragged_idx)
@@ -483,6 +491,7 @@ def index_select_tensor_dict(batch: TensorDict, indices: torch.Tensor | list[int
         indices = torch.tensor(indices)
 
     assert indices.dim() == 1, "indices must be a 1D tensor"
+    index_list = indices.detach().cpu().tolist()
 
     data_dict = {}
     batch_size = indices.shape[0]
@@ -492,8 +501,8 @@ def index_select_tensor_dict(batch: TensorDict, indices: torch.Tensor | list[int
             if isinstance(tensor, torch.Tensor) and not tensor.is_nested:
                 data_dict[key] = tensor[indices]
             elif isinstance(tensor, torch.Tensor) and tensor.is_nested:
-                tensor_lst = tensor.unbind()  # for performance
-                selected_tensors = [tensor_lst[idx] for idx in indices]
+                tensor_lst = _unbind_nested_tensor(tensor)
+                selected_tensors = [tensor_lst[idx] for idx in index_list]
                 data_dict[key] = nested_tensor_from_tensor_list(
                     selected_tensors, ragged_idx=getattr(tensor, "_ragged_idx", tensor.dim() - 1)
                 )

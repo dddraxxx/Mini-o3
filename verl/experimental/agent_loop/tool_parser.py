@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import ast
 import json
 import logging
 import os
@@ -75,6 +76,45 @@ class ToolParser(ABC):
             return subclass
 
         return decorator
+
+
+@ToolParser.register("minio3_grounding")
+class MiniO3GroundingToolParser(ToolParser):
+    """Parser for Mini-o3 legacy ``<grounding>{...}</grounding>`` tool calls."""
+
+    def __init__(self, tokenizer) -> None:
+        super().__init__(tokenizer)
+        self.grounding_regex = regex.compile(r"<grounding>\s*(\{.*?\})\s*</grounding>", regex.DOTALL)
+
+    @rollout_trace_op
+    async def extract_tool_calls(
+        self, responses_ids: list[int], tools: list[OpenAIFunctionToolSchema] = None
+    ) -> tuple[str, list[FunctionCall]]:
+        loop = get_event_loop()
+        text = await loop.run_in_executor(None, self.tokenizer.decode, responses_ids)
+        matches = self.grounding_regex.findall(text)
+        if not matches:
+            return text, []
+
+        function_calls = []
+        for match in matches:
+            try:
+                arguments = json.loads(match)
+            except json.JSONDecodeError:
+                try:
+                    arguments = ast.literal_eval(match)
+                except Exception as exc:
+                    logger.error(f"Failed to decode Mini-o3 grounding call: {exc}")
+                    continue
+
+            if not isinstance(arguments, dict):
+                logger.error(f"Mini-o3 grounding call must be a JSON object, got {type(arguments).__name__}")
+                continue
+            arguments.setdefault("source", "original_image")
+            function_calls.append(FunctionCall(name="tool_crop", arguments=json.dumps(arguments, ensure_ascii=False)))
+
+        content = self.grounding_regex.sub("", text)
+        return content, function_calls
 
 
 @ToolParser.register("hermes")

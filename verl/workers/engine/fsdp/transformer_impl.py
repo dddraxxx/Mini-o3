@@ -941,10 +941,49 @@ class FSDPEngineWithLMHead(FSDPEngine):
 
             if pad_mode == DatasetPadMode.NO_PADDING:
                 input_ids_rmpad = input_ids.values().unsqueeze(0)  # (1, total_nnz)
+                lengths = input_ids.offsets().diff().detach().cpu().tolist()
                 if position_ids.dim() == 3:
-                    position_ids_rmpad = position_ids.values().unsqueeze(1)  # (4, 1, total_nnz)
+                    if position_ids.is_nested:
+                        position_values = position_ids.values()
+                    elif position_ids.shape[0] == len(lengths) and position_ids.shape[1] in (3, 4):
+                        position_values = torch.cat(
+                            [position_ids[i, :, :seq_len] for i, seq_len in enumerate(lengths)], dim=1
+                        )
+                    elif position_ids.shape[1] == len(lengths) and position_ids.shape[0] in (3, 4):
+                        position_values = torch.cat(
+                            [position_ids[:, i, :seq_len] for i, seq_len in enumerate(lengths)], dim=1
+                        )
+                    elif position_ids.is_nested:
+                        position_values = position_ids.values()
+                    else:
+                        position_values = position_ids
+
+                    if position_values.dim() == 2 and position_values.shape[-1] in (3, 4):
+                        position_values = position_values.transpose(0, 1)
+                    if position_values.dim() == 2 and position_values.shape[0] == 3:
+                        text_position_ids = torch.cat(
+                            [
+                                torch.arange(seq_len, dtype=position_values.dtype, device=position_values.device)
+                                for seq_len in lengths
+                            ]
+                        ).unsqueeze(0)
+                        position_values = torch.cat((text_position_ids, position_values), dim=0)
+                    position_ids_rmpad = position_values.unsqueeze(1)  # (4, 1, total_nnz)
                 else:
                     position_ids_rmpad = position_ids.values().unsqueeze(0)  # (1, total_nnz)
+
+                if (
+                    position_ids_rmpad.dim() != 3
+                    or position_ids_rmpad.shape[-1] != input_ids_rmpad.shape[-1]
+                    or position_ids_rmpad.shape[0] not in (1, 3, 4)
+                ):
+                    text_position_ids = torch.cat(
+                        [
+                            torch.arange(seq_len, dtype=position_ids.dtype, device=position_ids.device)
+                            for seq_len in lengths
+                        ]
+                    )
+                    position_ids_rmpad = text_position_ids.unsqueeze(0).expand(4, -1).unsqueeze(1).contiguous()
             else:
                 raise NotImplementedError(f"pad_mode {pad_mode} not implemented")
 

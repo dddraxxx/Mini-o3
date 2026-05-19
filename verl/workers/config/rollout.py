@@ -60,6 +60,9 @@ class SamplingConfig(BaseConfig):
     top_p: float = 1.0
     do_sample: bool = True
     n: int = 1
+    response_length: Optional[int] = None
+    max_assistant_turns: Optional[int] = None
+    max_user_turns: Optional[int] = None
 
 
 @dataclass

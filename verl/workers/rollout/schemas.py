@@ -314,7 +314,8 @@ class AsyncRolloutRequest(BaseModel):
                 second_per_grid_ts=second_per_grid_ts,
                 attention_mask=attention_mask.squeeze(0),
             )
-            return new_position_ids  # (3, seq_len)
+            text_position_ids = torch.arange(input_ids.shape[-1], dtype=torch.long, device=input_ids.device).unsqueeze(0)
+            return torch.cat((text_position_ids, new_position_ids), dim=0)  # (4, seq_len)
         else:
             return compute_position_id_with_mask(attention_mask)  # (1, seq_len)
 

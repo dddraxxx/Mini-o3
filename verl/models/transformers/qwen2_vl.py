@@ -286,6 +286,18 @@ def qwen2_vl_attn_forward(
 
     # Because the input can be padded, the absolute sequence length depends on the max position id.
     cos, sin = position_embeddings
+    if cos.ndim == 4 and cos.shape[1] == q_len and cos.shape[2] == bsz:
+        # Some remove-padding + async rollout batches arrive as (3, seq, batch, dim),
+        # while HF's Qwen2-VL rotary helper expects (3, batch, seq, dim).
+        cos = cos.transpose(1, 2).contiguous()
+        sin = sin.transpose(1, 2).contiguous()
+    if cos.ndim == 4 and cos.shape[2] != q_len:
+        raise RuntimeError(
+            "Qwen2-VL rotary embedding shape mismatch: "
+            f"hidden_states={tuple(hidden_states.shape)}, query_states={tuple(query_states.shape)}, "
+            f"cos={tuple(cos.shape)}, sin={tuple(sin.shape)}, "
+            f"position_ids={tuple(position_ids.shape) if position_ids is not None else None}."
+        )
     if getattr(self, "rope_scaling", None) is not None:
         # for transformers < 5.0.0
         mrope_section = self.rope_scaling.get("mrope_section", None)
@@ -399,11 +411,49 @@ def _get_input_embeds(
     return inputs_embeds, attention_mask
 
 
-def process_position_ids(position_ids: torch.Tensor) -> torch.Tensor:
+def process_position_ids(position_ids: torch.Tensor, input_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
+    seq_len = input_ids.shape[-1] if input_ids is not None and input_ids.ndim >= 2 else None
+
+    if position_ids.ndim == 3 and seq_len is not None:
+        shape = tuple(position_ids.shape)
+        seq_dims = [idx for idx, size in enumerate(shape) if size == seq_len]
+        if seq_dims:
+            seq_dim = seq_dims[-1]
+            row_candidates = [idx for idx, size in enumerate(shape) if idx != seq_dim and size in (3, 4)]
+            if not row_candidates:
+                row_candidates = [idx for idx, size in enumerate(shape) if idx != seq_dim and size == 1]
+            if row_candidates:
+                row_dim = row_candidates[0]
+                batch_dim = next(idx for idx in range(3) if idx not in (row_dim, seq_dim))
+                position_ids = position_ids.permute(row_dim, batch_dim, seq_dim).contiguous()
+
+    if position_ids.ndim == 2:
+        if position_ids.size(0) in (1, 3, 4):
+            position_ids = position_ids.unsqueeze(1)
+        elif position_ids.size(1) in (1, 3, 4):
+            position_ids = position_ids.transpose(0, 1).unsqueeze(1)
+        else:
+            position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+
+    if position_ids.ndim == 3 and position_ids.size(0) != 4:
+        if position_ids.size(0) not in (1, 3, 4) and position_ids.size(1) in (1, 3, 4):
+            position_ids = position_ids.transpose(0, 1)
+        if position_ids.size(0) == 1:
+            position_ids = position_ids.repeat(4, 1, 1)
+        elif position_ids.size(0) == 3:
+            text_position_ids = torch.arange(
+                position_ids.size(-1), dtype=position_ids.dtype, device=position_ids.device
+            ).view(1, 1, -1)
+            text_position_ids = text_position_ids.expand(-1, position_ids.size(1), -1)
+            position_ids = torch.cat((text_position_ids, position_ids), dim=0)
+
     if position_ids.ndim != 3 or position_ids.size(0) != 4:
         # we concat the text position ids with the 3D vision position ids by default
         # see https://github.com/huggingface/transformers/pull/39447
-        raise ValueError("position_ids should be a 3D tensor of shape (4, batch_size, seq_length).")
+        raise ValueError(
+            "position_ids should be a 3D tensor of shape "
+            f"(4, batch_size, seq_length), got {tuple(position_ids.shape)}."
+        )
 
     if is_transformers_version_in_range(max_version="4.53.3"):
         # transformers < 4.54.0 only accepts vision position ids, so we discard the text position ids here
@@ -429,6 +479,7 @@ def qwen2_vl_base_forward(
     video_grid_thw: Optional[torch.LongTensor] = None,
     **kwargs,
 ):
+    kwargs.pop("images_seqlens", None)
     kwargs["inputs_embeds"], kwargs["attention_mask"] = _get_input_embeds(
         self, input_ids, attention_mask, pixel_values, pixel_values_videos, image_grid_thw, video_grid_thw
     )  # avoid lora module having multiple keyword arguments
@@ -446,11 +497,12 @@ def qwen2_vl_forward(
     video_grid_thw: Optional[torch.LongTensor] = None,
     **kwargs,
 ):
+    kwargs.pop("images_seqlens", None)
     if is_transformers_version_in_range(min_version="4.52.0"):
         return self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            position_ids=process_position_ids(position_ids),
+            position_ids=process_position_ids(position_ids, input_ids=input_ids),
             pixel_values=pixel_values,
             pixel_values_videos=pixel_values_videos,
             image_grid_thw=image_grid_thw,
@@ -464,7 +516,7 @@ def qwen2_vl_forward(
         return self.model(
             input_ids=None,
             attention_mask=attention_mask,
-            position_ids=process_position_ids(position_ids),
+            position_ids=process_position_ids(position_ids, input_ids=input_ids),
             inputs_embeds=inputs_embeds,
             **kwargs,
         )

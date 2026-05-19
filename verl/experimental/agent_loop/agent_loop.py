@@ -447,6 +447,26 @@ class AgentLoopWorker:
                 mm_processor_kwargs["sampling_rate"] = int(sampling_rate)
         return mm_processor_kwargs
 
+    def _effective_response_length(self, validate: bool) -> int:
+        if validate and self.rollout_config.val_kwargs.response_length is not None:
+            return int(self.rollout_config.val_kwargs.response_length)
+        return int(self.rollout_config.response_length)
+
+    def _apply_validate_overrides(self, agent_loop: AgentLoopBase) -> None:
+        val_kwargs = self.rollout_config.val_kwargs
+        if val_kwargs.response_length is not None:
+            response_length = int(val_kwargs.response_length)
+            if hasattr(agent_loop, "response_length"):
+                agent_loop.response_length = response_length
+        if val_kwargs.max_assistant_turns is not None:
+            max_assistant_turns = int(val_kwargs.max_assistant_turns)
+            if hasattr(agent_loop, "max_assistant_turns"):
+                agent_loop.max_assistant_turns = max_assistant_turns
+        if val_kwargs.max_user_turns is not None:
+            max_user_turns = int(val_kwargs.max_user_turns)
+            if hasattr(agent_loop, "max_user_turns"):
+                agent_loop.max_user_turns = max_user_turns
+
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.
 
@@ -488,6 +508,8 @@ class AgentLoopWorker:
             sampling_params["top_p"] = config.val_kwargs.top_p
             sampling_params["top_k"] = config.val_kwargs.top_k
             sampling_params["temperature"] = config.val_kwargs.temperature
+            if config.val_kwargs.response_length is not None:
+                sampling_params["max_tokens"] = int(config.val_kwargs.response_length)
 
         # by default, we assume it's a single turn agent
         if "agent_name" not in batch.non_tensor_batch:
@@ -573,12 +595,15 @@ class AgentLoopWorker:
                 data_config=DictConfigWrap(self.config.data),
                 tools=ToolListWrap(self.tools),
             )
+            if trajectory["validate"]:
+                self._apply_validate_overrides(agent_loop)
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
             return await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
 
     async def _agent_loop_postprocess(self, output, validate, **kwargs) -> _InternalAgentLoopOutput:
         """Perform post-processing operations on the output of each individual agent loop."""
         output.extra_fields["raw_prompt"] = kwargs["raw_prompt"]
+        response_length = self._effective_response_length(validate)
 
         # Some AgentLoop may have already computed the reward score, e.g SWE-agent.
 
@@ -617,7 +642,7 @@ class AgentLoopWorker:
         response_output = self.tokenizer.pad(
             {"input_ids": output.response_ids},
             padding="max_length",
-            max_length=self.rollout_config.response_length,
+            max_length=response_length,
             return_tensors="pt",
             return_attention_mask=True,
         )
@@ -628,7 +653,7 @@ class AgentLoopWorker:
         response_mask_output = self.tokenizer.pad(
             {"input_ids": output.response_mask},
             padding="max_length",
-            max_length=self.rollout_config.response_length,
+            max_length=response_length,
             return_tensors="pt",
             return_attention_mask=False,
         )
@@ -637,7 +662,7 @@ class AgentLoopWorker:
 
         response_logprobs = None
         if output.response_logprobs is not None:
-            pad_size = self.rollout_config.response_length - len(output.response_logprobs)
+            pad_size = response_length - len(output.response_logprobs)
             response_logprobs = torch.tensor(output.response_logprobs + [0.0] * pad_size).unsqueeze(0)
 
         response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]

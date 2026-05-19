@@ -393,6 +393,30 @@ class RLHFDataset(Dataset):
         return row_dict
 
     @classmethod
+    def _call_qwen_process_vision_info(
+        cls,
+        messages: list[dict],
+        image_patch_size,
+    ) -> tuple[list[Image.Image], list[Any]]:
+        from qwen_vl_utils import process_vision_info
+
+        try:
+            return process_vision_info(messages, image_patch_size=image_patch_size, return_video_metadata=True)
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+
+        try:
+            result = process_vision_info(messages, return_video_kwargs=True)
+        except TypeError:
+            result = process_vision_info(messages)
+
+        if isinstance(result, tuple) and len(result) == 3:
+            images, videos, _ = result
+            return images, videos
+        return result
+
+    @classmethod
     async def process_vision_info(
         cls,
         messages: list[dict],
@@ -421,10 +445,7 @@ class RLHFDataset(Dataset):
             images: List of images.
             videos: List of videos, each video is a tuple of (video_tensor, video_metadata).
         """
-        from qwen_vl_utils import process_vision_info
-
-        images, videos = process_vision_info(messages, image_patch_size=image_patch_size, return_video_metadata=True)
-        return images, videos
+        return cls._call_qwen_process_vision_info(messages, image_patch_size)
 
     @classmethod
     def _extract_audio_info(cls, messages: list[dict]) -> list[Any]:
@@ -457,11 +478,7 @@ class RLHFDataset(Dataset):
             for message in messages
         )
         if has_visual:
-            from qwen_vl_utils import process_vision_info
-
-            images, videos = process_vision_info(
-                messages, image_patch_size=image_patch_size, return_video_metadata=True
-            )
+            images, videos = cls._call_qwen_process_vision_info(messages, image_patch_size)
         else:
             images, videos = None, None
         audios = cls._extract_audio_info(messages)
