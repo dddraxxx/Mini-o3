@@ -189,7 +189,7 @@ TRAIN_SAMPLES_JSONL_LIMIT=16
 
 ## some still not migrated mini-o3 features
 
-1. Rejection sampling
+### Rejection sampling
 
 Mini-o3 旧的 prompt-stream rejection sampling 没完整迁移。
 
@@ -215,69 +215,47 @@ Mini-o3 旧的 prompt-stream rejection sampling 没完整迁移。
 - accepted group 进入当前 train batch
 - used group 不再进入训练
 
-3. `AcceptedBatchBuilder`
-每个 trainer step 调它：
-- 持续 dispatch group
-- 并发跑 AgentLoop
-- 收集完成 group
-- 跑 reward / rejection rule
-- 直到 accepted trajectories 数量满足 `train_batch_size`
-- 然后组装成一个 `DataProto` 返回给 trainer
-
-主要难点不是 vLLM，而是 trainer/dataflow 语义：
-
-- 当前 `ray_trainer.py` 通常假设一个 dataloader batch 对应一个 training step。
-- 如果 prompt group 会跨 step pending，就不能只存在当前 local batch 变量里，要放在一个 stateful manager 里。
-- 如果一个 group rollout 完但没有 accept/reject，必须持久保存，否则下一步会丢状态。
-- 多 worker 下 group status 更新要集中管理，不能各 worker 各自改，否则会重复用 prompt。
-
-我建议实现顺序：
-
-1. 先做单进程/单 trainer actor 内的 `PromptGroupStateManager`
-只在 trainer driver 上维护 status，先不要分布式持久化。这个足够支持单 node run。
-
-2. 把 official AgentLoopManager 包一层
-不要改 vLLM server 本身。新增一个 Mini-o3 rollout collection loop，在调用 official async rollout 外面做循环和 accept
-/reject。
-
-3. 先只支持三种状态
-`running / accepted / rejected`。`pending across step` 可以加，但第一版可以把没决策的当作 pending queue 留内存，不落
-盘。
-
-4. 加最小 checkpoint
-每 step 写一个 `prompt_stream_state.jsonl` 或 `prompt_stream_state.pt`，包含 group id、status、attempts、uid。这样中
-断恢复有基础。
-
-5. 再接 rejection rule
 先用旧 Mini-o3 的 group-level rule，比如一个 prompt group 里 reward 全 0 / 全 1 / effective ratio 不满足，就 reject
 或重采。
 
 所以答案是：**可以做，而且不需要重写 vLLM server；应该在 official async rollout 外层加一个 stateful prompt-stream sc
 heduler。**
 
-我会把它设计成：
+proposed loop:
 
 ```text
-Trainer Step
-  |
-  v
-MiniO3PromptStreamRolloutCollector
-  |
-  +--> PromptGroupStateManager
-  |       pending / running / accepted / rejected / used
-  |
-  +--> Official AgentLoopManager
-  |       dispatch group -> async trajectories
-  |
-  +--> Reward + Rejection Policy
-  |
-  v
-accepted DataProto batch
+MiniO3PromptStreamCollector
+  all_groups fill pending batches to [pool size param] (default train_batch_size)
+  accepted_groups buffer
+
+  while accepted_groups not enough:
+    log all_groups status
+    all pending in all_groups -> vLLM server, mark running
+    await FIRST_COMPLETED
+
+    if group finishes:
+      run reward / rejection rule
+      accepted -> mark accepted and save to accepted_groups
+      rejected -> mark rejected
+      refill that slot with a new pending group
+
+  copy unfinished running groups back to pending
+  abort all requests
+  pop accepted/rejected/running groups from all_groups
+  build one DataProto from accepted_groups
 ```
 
-这样既保留 official verl 的 AgentLoop/vLLM DP server，又恢复旧 Mini-o3 的 prompt group rejection semantics。
+补充细节：
 
-2. out-of-turn-limit loss mask
+- 这里 copy running back to pending 是有意的：unfinished group 没有被 reward / reject / train，重发可以避免慢样本被系统性丢掉。
+- abort 还在：step 结束时对 unfinished running requests 尽量 abort，释放 vLLM slots；如果暂时拿不到 request id，就 ignore late output。
+- accepted 只进入 `accepted_groups`；等 buffer 满了再 build 一个完整 `DataProto` 交给 trainer。
+- 如果旧 running output 后面才回来，发现 group 已经不是这次 running，就直接忽略。
+- log 走 trainer metrics/file logger：每 step 记录 `pending/running/accepted/rejected/aborted/retried` 计数和 accepted buffer 大小，写到 console/wandb/`train_step_metrics.jsonl`。
+- AgentLoopManager submit group 时用 least-inflight worker：每个 prompt group 作为一个小 `DataProto` 发给当前 running group 数最少的 AgentLoopWorker，同时 log per-worker inflight，避免 round-robin 在长短轨迹混合时倾斜。
+- accepted/rejected group 本 epoch 不再复用；pending group 可以后续继续重发。
+
+### out-of-turn-limit loss mask
   这个也基本是缺的，至少不是旧 Mini-o3 等价实现。
 
   旧 Mini-o3 关键点是：
@@ -288,10 +266,21 @@ accepted DataProto batch
   - 还会对 exceed_mask / void_mask 把 loss mask 清零
   - 旧脚本默认开：actor_rollout_ref.actor.use_multi_turn_response_mask=True
 
-  当前 official verl 迁移版有 response_mask，而且工具 observation token 会标成 0，这部分是对的；但我没看到旧 Mini-o3
-  那种 actor 侧 use_multi_turn_response_mask + exceed/void loss 清零逻辑被移植进来。
+  当前 official verl 迁移版有 response_mask，而且工具 observation token 会标成 0，这部分是对的；因此不用把旧
+  `multi_turn_response_mask` 原样搬进 actor。需要补齐的是 exceed/void 这类整条 trajectory 的 loss-mask 清零。
 
-  所以结论是：
+  迁移方式：
 
-  普通 tool observation loss mask 有了；但 out-of-turn-limit / invalid trajectory 的整条或局部 loss mask 还没按旧
-  Mini-o3 对齐。
+  - `mini_o3_tool_agent` 在模型还想继续 crop 但已经撞到 `response_length`、assistant/user turn 上限、或 observation
+    会超过 response budget 时，写出 `extra_fields.exceed_mask=True`。
+  - 如果终止时是 length stop 或缺少最终 `<answer>...</answer>`，写出 `extra_fields.void_mask=True`；这个默认只记录，
+    不参与 loss 清零。
+  - `ray_trainer.apply_minio3_loss_masks()` 在 reward 之后、old_log_prob/advantage/actor update 之前，把这些 row mask
+    应用到 `batch.batch["response_mask"]`。
+  - actor config 支持 `ignore_exceed` / `ignore_void`。正式 Mini-o3 脚本默认 `ignore_exceed=True`、`ignore_void=False`，
+    对齐旧 `run_minio3_rl_lora_pyvision_style*.sh`。
+
+  结论：
+
+  普通 tool observation loss mask 和 out-of-turn-limit 整条 loss mask 都已接到 official verl 的 `response_mask`
+  路径上；旧的 `use_multi_turn_response_mask` 不需要再移植。

@@ -30,6 +30,8 @@ KL_LOSS_COEF=${KL_LOSS_COEF:-0}
 ENTROPY_COEFF=${ENTROPY_COEFF:-0}
 CLIP_RATIO_HIGH=${CLIP_RATIO_HIGH:-0.3}
 CLIP_RATIO_LOW=${CLIP_RATIO_LOW:-0.2}
+MINIO3_IGNORE_EXCEED=${MINIO3_IGNORE_EXCEED:-True}
+MINIO3_IGNORE_VOID=${MINIO3_IGNORE_VOID:-False}
 ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-False}
 ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-False}
 REF_PARAM_OFFLOAD=${REF_PARAM_OFFLOAD:-True}
@@ -136,6 +138,8 @@ ACTOR=(
     actor_rollout_ref.actor.entropy_coeff=${ENTROPY_COEFF}
     actor_rollout_ref.actor.clip_ratio_high=${CLIP_RATIO_HIGH}
     actor_rollout_ref.actor.clip_ratio_low=${CLIP_RATIO_LOW}
+    actor_rollout_ref.actor.ignore_exceed=${MINIO3_IGNORE_EXCEED}
+    actor_rollout_ref.actor.ignore_void=${MINIO3_IGNORE_VOID}
     actor_rollout_ref.actor.fsdp_config.param_offload=${ACTOR_PARAM_OFFLOAD}
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=${ACTOR_OPTIMIZER_OFFLOAD}
 )

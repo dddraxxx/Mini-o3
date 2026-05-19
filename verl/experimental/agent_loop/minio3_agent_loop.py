@@ -7,12 +7,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from typing import Any
 
 from verl.experimental.agent_loop.agent_loop import register
 from verl.experimental.agent_loop.tool_agent_loop import AgentData, AgentState, ToolAgentLoop
 from verl.utils.profiler import simple_timer
+from verl.workers.rollout.replica import TokenOutput
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -39,7 +41,93 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
         if self.tool_parser_name == "minio3_grounding":
             turn_sampling_params.setdefault("stop", ["</grounding>"])
             turn_sampling_params.setdefault("include_stop_str_in_output", True)
-        return await super()._handle_generating_state(agent_data, turn_sampling_params, ignore_termination)
+
+        if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
+            self._mark_exceed(agent_data, "response_length_before_generation")
+            return AgentState.TERMINATED
+
+        turn_sampling_params = dict(turn_sampling_params)
+        remaining_tokens = max(self.response_length - len(agent_data.response_mask), 0)
+        requested_max_tokens = turn_sampling_params.pop("max_tokens", turn_sampling_params.pop("max_new_tokens", None))
+        if requested_max_tokens is None:
+            turn_sampling_params["max_tokens"] = remaining_tokens
+        else:
+            turn_sampling_params["max_tokens"] = min(int(requested_max_tokens), remaining_tokens)
+
+        t0 = time.monotonic()
+        _stage_log(
+            f"minio3.generate.start request={agent_data.request_id[:8]} "
+            f"assistant_turn={agent_data.assistant_turns + 1} user_turns={agent_data.user_turns} "
+            f"prompt_len={len(agent_data.prompt_ids)} remaining={remaining_tokens} "
+            f"max_tokens={turn_sampling_params['max_tokens']}"
+        )
+        with simple_timer("generate_sequences", agent_data.metrics):
+            output: TokenOutput = await self.server_manager.generate(
+                request_id=agent_data.request_id,
+                prompt_ids=agent_data.prompt_ids,
+                sampling_params=turn_sampling_params,
+                image_data=agent_data.image_data,
+                video_data=agent_data.video_data,
+                audio_data=agent_data.audio_data,
+                mm_processor_kwargs=agent_data.mm_processor_kwargs,
+            )
+        _stage_log(
+            f"minio3.generate.end request={agent_data.request_id[:8]} tokens={len(output.token_ids)} "
+            f"stop={output.stop_reason} dt={time.monotonic() - t0:.3f}s"
+        )
+
+        if agent_data.metrics.get("num_preempted") is None:
+            agent_data.metrics["num_preempted"] = output.num_preempted if output.num_preempted is not None else -1
+        else:
+            agent_data.metrics["num_preempted"] += output.num_preempted if output.num_preempted is not None else 0
+
+        if not agent_data.extra_fields:
+            agent_data.extra_fields.update(output.extra_fields)
+        else:
+            max_global_steps = output.extra_fields.get("max_global_steps", None)
+            if max_global_steps:
+                agent_data.extra_fields["max_global_steps"] = max_global_steps
+
+        agent_data.assistant_turns += 1
+        agent_data.response_ids = output.token_ids
+        agent_data.prompt_ids += agent_data.response_ids
+        agent_data.response_mask += [1] * len(agent_data.response_ids)
+        if output.log_probs:
+            agent_data.response_logprobs += output.log_probs
+
+        if output.routed_experts is not None:
+            agent_data.routed_experts = output.routed_experts
+
+        active_tools = getattr(agent_data, "_active_tools", self.tools)
+        tools = [tool.tool_schema for tool in active_tools.values()]
+        _, agent_data.tool_calls = await self.tool_parser.extract_tool_calls(agent_data.response_ids, tools)
+
+        if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
+            if agent_data.tool_calls:
+                self._mark_exceed(agent_data, "response_length_with_tool_call")
+            else:
+                self._mark_void_if_invalid_final(agent_data, output.stop_reason)
+            return AgentState.TERMINATED
+
+        if self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns:
+            if agent_data.tool_calls:
+                self._mark_exceed(agent_data, "assistant_turn_limit_with_tool_call")
+            else:
+                self._mark_void_if_invalid_final(agent_data, output.stop_reason)
+            return AgentState.TERMINATED
+
+        if self.max_user_turns and agent_data.user_turns >= self.max_user_turns:
+            if agent_data.tool_calls:
+                self._mark_exceed(agent_data, "user_turn_limit_with_tool_call")
+            else:
+                self._mark_void_if_invalid_final(agent_data, output.stop_reason)
+            return AgentState.TERMINATED
+
+        if agent_data.tool_calls:
+            return AgentState.PROCESSING_TOOLS
+
+        self._mark_void_if_invalid_final(agent_data, output.stop_reason)
+        return AgentState.TERMINATED
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
         t0 = time.monotonic()
@@ -106,6 +194,7 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
         )
 
         if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
+            self._mark_exceed(agent_data, "observation_would_exceed_response_length")
             return AgentState.TERMINATED
 
         if new_images_this_turn:
@@ -135,3 +224,18 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
             "or any observation by outputting <grounding> and </grounding> as before. "
             "If the final answer is confirmed, put it inside <answer> and </answer>."
         )
+
+    def _mark_exceed(self, agent_data: AgentData, reason: str) -> None:
+        agent_data.extra_fields["exceed_mask"] = True
+        agent_data.extra_fields.setdefault("exceed_reason", reason)
+        _stage_log(f"minio3.exceed request={agent_data.request_id[:8]} reason={reason}")
+
+    def _mark_void_if_invalid_final(self, agent_data: AgentData, stop_reason: Any) -> None:
+        decoded = self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
+        stopped_by_length = "length" in str(stop_reason or "").lower()
+        has_final_answer = re.match(r".*<answer>.*</answer>$", decoded, re.DOTALL) is not None
+        if stopped_by_length or not has_final_answer:
+            reason = "length" if stopped_by_length else "missing_answer_tag"
+            agent_data.extra_fields["void_mask"] = True
+            agent_data.extra_fields.setdefault("void_reason", reason)
+            _stage_log(f"minio3.void request={agent_data.request_id[:8]} reason={reason}")

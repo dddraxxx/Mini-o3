@@ -133,6 +133,65 @@ def compute_response_mask(data: DataProto):
     return attention_mask[:, -response_length:]
 
 
+def _coerce_bool_row_mask(values: Any, *, batch_size: int, device: torch.device, key: str) -> torch.Tensor:
+    if isinstance(values, torch.Tensor):
+        mask = values.to(device=device, dtype=torch.bool).flatten()
+    else:
+        arr = np.asarray(values, dtype=object).reshape(-1)
+        mask = torch.tensor(
+            [bool(item.item() if hasattr(item, "item") else item) for item in arr],
+            dtype=torch.bool,
+            device=device,
+        )
+    if mask.numel() != batch_size:
+        raise ValueError(f"{key} must have one value per sample, got {mask.numel()} for batch size {batch_size}")
+    return mask
+
+
+def _get_row_mask(data: DataProto, key: str, *, batch_size: int, device: torch.device) -> Optional[torch.Tensor]:
+    if data.batch is not None and key in data.batch.keys():
+        return _coerce_bool_row_mask(data.batch[key], batch_size=batch_size, device=device, key=key)
+    if data.non_tensor_batch is not None and key in data.non_tensor_batch:
+        return _coerce_bool_row_mask(data.non_tensor_batch[key], batch_size=batch_size, device=device, key=key)
+    return None
+
+
+def apply_minio3_loss_masks(data: DataProto, actor_config) -> dict[str, float]:
+    """Zero response_mask rows for Mini-o3 trajectories that should not train the actor."""
+    if "response_mask" not in data.batch.keys():
+        data.batch["response_mask"] = compute_response_mask(data)
+
+    response_mask = data.batch["response_mask"]
+    batch_size = response_mask.shape[0]
+    device = response_mask.device
+    metrics: dict[str, float] = {}
+    masks_to_zero = torch.zeros(batch_size, dtype=torch.bool, device=device)
+    saw_minio3_mask = False
+
+    for mask_key, config_key, metric_name in (
+        ("exceed_mask", "ignore_exceed", "exceed"),
+        ("void_mask", "ignore_void", "void"),
+    ):
+        row_mask = _get_row_mask(data, mask_key, batch_size=batch_size, device=device)
+        if row_mask is None:
+            continue
+
+        saw_minio3_mask = True
+        mask_ratio = row_mask.float().mean().item()
+        metrics[f"batch/{metric_name}_sample_ratio"] = mask_ratio
+        if actor_config.get(config_key, False):
+            masks_to_zero |= row_mask
+            metrics[f"batch/ignore_{metric_name}_sample_ratio"] = mask_ratio
+
+    if masks_to_zero.any():
+        response_mask[masks_to_zero] = 0
+
+    if saw_minio3_mask:
+        metrics["batch/minio3_loss_mask_zeroed_ratio"] = masks_to_zero.float().mean().item()
+
+    return metrics
+
+
 def compute_advantage(
     data: DataProto,
     adv_estimator: AdvantageEstimator,
@@ -1587,6 +1646,8 @@ class RayPPOTrainer:
 
                         # extract reward_tensor and reward_extra_infos_dict for training
                         reward_tensor, reward_extra_infos_dict = extract_reward(batch)
+
+                    metrics.update(apply_minio3_loss_masks(batch, self.config.actor_rollout_ref.actor))
 
                     # Operating Mode Selection:
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
