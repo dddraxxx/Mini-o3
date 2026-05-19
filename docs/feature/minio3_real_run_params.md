@@ -84,7 +84,7 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | `ROLLOUT_GPU_MEM_UTIL` | `0.9` | `0.9` |
 | `ROLLOUT_FREE_CACHE_ENGINE` | `True` | `True` |
 | `MAX_NUM_BATCHED_TOKENS` | `32768` | `32768` |
-| `MAX_NUM_SEQS` | `128` | `256` |
+| `MAX_NUM_SEQS` | `256` | `256` |
 | Mini-o3 loss mask | `MINIO3_IGNORE_EXCEED=True`, `MINIO3_IGNORE_VOID=False` | same |
 | prompt admission | enabled, std epsilon `1.0e-4`, state JSONL under `RUN_DIR` | same |
 | `SAVE_FREQ` | `10` | `10` |
@@ -98,6 +98,14 @@ LoRA runs save `actor/lora_adapter/adapter_model.safetensors` plus optimizer and
 
 GPU util 采样默认写入 `gpu_util.jsonl`，汇总方式见
 [minio3_gpu_monitoring.md](minio3_gpu_monitoring.md)。
+
+2026-05-19 A100 单步对比结论：在 `TRAIN_BATCH_SIZE=64`、`ROLLOUT_N=8`、
+`MAX_NUM_BATCHED_TOKENS=32768`、禁 validation/checkpoint、强制 admission accept 的设置下，
+`MAX_NUM_SEQS=256` 比 `512` 更快更稳。256 run 的 `timing_s/gen=462.18s`、
+`timing_s/step=733.37s`、`perf/throughput=357.37 tok/s/GPU`；512 run 的
+`timing_s/gen=469.01s`、`timing_s/step=751.20s`、`perf/throughput=344.22 tok/s/GPU`。
+因此 A100 profile 当前默认固定为 `MAX_NUM_SEQS=256`；后续如果继续优化，优先测试
+`MAX_NUM_BATCHED_TOKENS=49152/65536`，不要先把 `MAX_NUM_SEQS` 继续上调。
 
 `ROLLOUT_SKIP_VLLM_DUMMY_LORA=True` is an A100 DP=8 LoRA workaround for vLLM V1 spawn workers.
 The launch script adds the repo root to `PYTHONPATH`, and `sitecustomize.py` patches vLLM dummy
