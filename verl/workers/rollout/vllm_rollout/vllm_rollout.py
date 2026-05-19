@@ -48,6 +48,12 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
 
 
+def _minio3_stage_log(message: str) -> None:
+    if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
+        rank = os.getenv("RANK", "?")
+        logger.warning("[minio3-stage] server_adapter.rank=%s %s", rank, message)
+
+
 def _check_vllm_version_for_sleep_level():
     # https://github.com/vllm-project/vllm/issues/25171
     minver = "0.11.0"
@@ -167,32 +173,49 @@ class ServerAdapter(BaseRollout):
     ):
         """Update model weights via CUDA IPC (fallback to shared memory if IPC not supported) to inference workers."""
         start_time = time.time()
+        peft_config = kwargs.get("peft_config")
+        base_sync_done = kwargs.get("base_sync_done")
+        _minio3_stage_log(
+            f"update_weights.start replica_rank={self.replica_rank} rollout_rank={self.rollout_rank} "
+            f"global_steps={global_steps} peft_config={peft_config is not None} "
+            f"base_sync_done={base_sync_done} use_shm={self.use_shm}"
+        )
 
+        _minio3_stage_log("update_weights.remote_update_from_ipc.start")
         future = await self._execute_method(
             "update_weights_from_ipc",
             non_block=True,
             kwargs={**kwargs, "use_shm": self.use_shm},
         )
+        _minio3_stage_log(f"update_weights.remote_update_from_ipc.done future={future is not None}")
 
         bucket_size_mb = self.config.checkpoint_engine.update_weights_bucket_megabytes
+        _minio3_stage_log(f"update_weights.sender.init bucket_size_mb={bucket_size_mb}")
         sender = BucketedWeightSender(
             zmq_handle=self.zmq_handle,
             bucket_size_mb=bucket_size_mb,
             use_shm=self.use_shm,
         )
+        _minio3_stage_log("update_weights.sender.send.start")
         await sender.async_send_weights(weights)
+        _minio3_stage_log("update_weights.sender.send.done")
 
         if future is not None:
+            _minio3_stage_log("update_weights.remote_future_wait.start")
             await future
+            _minio3_stage_log("update_weights.remote_future_wait.done")
 
         # reset prefix cache after updating weights
         if self.rollout_rank == 0:
+            _minio3_stage_log("update_weights.clear_kv_cache.start")
             await self.server_handle.clear_kv_cache.remote()
             if global_steps is not None:
                 await self.server_handle.set_global_steps.remote(global_steps)
+            _minio3_stage_log("update_weights.clear_kv_cache.done")
 
         if self.replica_rank == 0 and self.rollout_rank == 0:
             logger.info(f"update_weights done, time cost: {time.time() - start_time:.2f}s")
+        _minio3_stage_log(f"update_weights.done elapsed_s={time.time() - start_time:.2f}")
 
     def _get_server_name_prefix(self) -> str:
         """Return the Ray actor name prefix matching the rollout type (e.g. 'vllm_')."""

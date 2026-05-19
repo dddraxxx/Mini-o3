@@ -267,6 +267,9 @@ actor_rollout_ref:
       temperature: 0
       'n': 1
       do_sample: false
+      response_length: null
+      max_assistant_turns: null
+      max_user_turns: null
     multi_turn:
       _target_: verl.workers.config.MultiTurnConfig
       enable: false
@@ -813,9 +816,16 @@ trainer:
   log_val_generations: 0
   rollout_data_dir: null
   validation_data_dir: null
+  prompt_admission_enable: false
+  prompt_admission_pool_size: null
+  prompt_admission_reward_std_epsilon: 0.0001
+  prompt_admission_wait_timeout_s: 0.1
+  prompt_admission_cancel_unfinished: true
+  prompt_admission_state_path: null
   nnodes: 1
   n_gpus_per_node: 8
   save_freq: -1
+  save_lora_only: false
   esi_redundant_time: 0
   resume_mode: auto
   resume_from_path: null

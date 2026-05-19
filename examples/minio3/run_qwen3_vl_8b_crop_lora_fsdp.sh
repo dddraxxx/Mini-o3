@@ -4,7 +4,8 @@
 set -xeuo pipefail
 
 PROJECT_DIR=${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
-read -r -a PYTHON_CMD <<< "${PYTHON_CMD:-uv run --no-sync python}"
+export PYTHONPATH="$PROJECT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+read -r -a PYTHON_CMD <<< "${PYTHON_CMD:-uv run --active --no-sync python}"
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-VL-8B-Instruct}
 NNODES=${NNODES:-1}
 NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
@@ -61,6 +62,8 @@ MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-32768}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-64}
 ROLLOUT_ENFORCE_EAGER=${ROLLOUT_ENFORCE_EAGER:-False}
 ROLLOUT_FREE_CACHE_ENGINE=${ROLLOUT_FREE_CACHE_ENGINE:-True}
+ROLLOUT_DISABLE_MM_PREPROCESSOR_CACHE=${ROLLOUT_DISABLE_MM_PREPROCESSOR_CACHE:-False}
+ROLLOUT_SKIP_VLLM_DUMMY_LORA=${ROLLOUT_SKIP_VLLM_DUMMY_LORA:-False}
 LOG_PROB_MICRO_BATCH_SIZE_PER_GPU=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU:-1}
 REF_LOG_PROB_MICRO_BATCH_SIZE_PER_GPU=${REF_LOG_PROB_MICRO_BATCH_SIZE_PER_GPU:-1}
 MAX_ASSISTANT_TURNS=${MAX_ASSISTANT_TURNS:-6}
@@ -87,11 +90,21 @@ ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-}
 VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-}
 TRAIN_SAMPLES_JSONL=${TRAIN_SAMPLES_JSONL:-}
 TRAIN_SAMPLES_JSONL_LIMIT=${TRAIN_SAMPLES_JSONL_LIMIT:-16}
+PROMPT_ADMISSION_ENABLE=${PROMPT_ADMISSION_ENABLE:-True}
+PROMPT_ADMISSION_POOL_SIZE=${PROMPT_ADMISSION_POOL_SIZE:-}
+PROMPT_ADMISSION_REWARD_STD_EPSILON=${PROMPT_ADMISSION_REWARD_STD_EPSILON:-1.0e-4}
+PROMPT_ADMISSION_WAIT_TIMEOUT_S=${PROMPT_ADMISSION_WAIT_TIMEOUT_S:-0.1}
+PROMPT_ADMISSION_CANCEL_UNFINISHED=${PROMPT_ADMISSION_CANCEL_UNFINISHED:-True}
+PROMPT_ADMISSION_STATE_PATH=${PROMPT_ADMISSION_STATE_PATH:-}
 
 PROJECT_NAME=${PROJECT_NAME:-minio3_official_verl}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-qwen3_vl_8b_crop_lora_$(date +%Y%m%d_%H%M)}
 TOOL_CONFIG_PATH=${TOOL_CONFIG_PATH:-$PROJECT_DIR/examples/minio3/config/tool_config/minio3_crop_tool.yaml}
 REWARD_FN_PATH=${REWARD_FN_PATH:-$PROJECT_DIR/examples/minio3/minio3_reward.py}
+
+if [[ -n "${RUN_DIR}" && -z "${PROMPT_ADMISSION_STATE_PATH}" ]]; then
+    PROMPT_ADMISSION_STATE_PATH="$RUN_DIR/prompt_admission_state.jsonl"
+fi
 
 if [[ -n "${RUN_DIR}" && "${LOGGER_BACKENDS}" == *\"file\"* && -z "${VERL_FILE_LOGGER_PATH:-}" ]]; then
     export VERL_FILE_LOGGER_PATH="$RUN_DIR/train_step_metrics.jsonl"
@@ -190,6 +203,16 @@ if [[ -n "${ROLLOUT_VLLM_EXECUTOR_BACKEND}" ]]; then
     )
 fi
 
+if [[ "$ROLLOUT_DISABLE_MM_PREPROCESSOR_CACHE" == "True" || "$ROLLOUT_DISABLE_MM_PREPROCESSOR_CACHE" == "true" || "$ROLLOUT_DISABLE_MM_PREPROCESSOR_CACHE" == "1" ]]; then
+    ROLLOUT+=(
+        +actor_rollout_ref.rollout.engine_kwargs.vllm.disable_mm_preprocessor_cache=True
+    )
+fi
+
+if [[ "$ROLLOUT_SKIP_VLLM_DUMMY_LORA" == "True" || "$ROLLOUT_SKIP_VLLM_DUMMY_LORA" == "true" || "$ROLLOUT_SKIP_VLLM_DUMMY_LORA" == "1" ]]; then
+    export VERL_VLLM_SKIP_DUMMY_LORA=1
+fi
+
 REF=(
     actor_rollout_ref.ref.fsdp_config.param_offload=${REF_PARAM_OFFLOAD}
 )
@@ -228,6 +251,10 @@ TRAINER=(
     trainer.val_before_train=${VAL_BEFORE_TRAIN}
     trainer.val_only=${VAL_ONLY}
     trainer.log_val_generations=${LOG_VAL_GENERATIONS}
+    trainer.prompt_admission_enable=${PROMPT_ADMISSION_ENABLE}
+    trainer.prompt_admission_reward_std_epsilon=${PROMPT_ADMISSION_REWARD_STD_EPSILON}
+    trainer.prompt_admission_wait_timeout_s=${PROMPT_ADMISSION_WAIT_TIMEOUT_S}
+    trainer.prompt_admission_cancel_unfinished=${PROMPT_ADMISSION_CANCEL_UNFINISHED}
 )
 
 REWARD=(
@@ -241,6 +268,14 @@ fi
 
 if [ -n "${RUN_DIR}" ]; then
     TRAINER+=(trainer.default_local_dir=${RUN_DIR})
+fi
+
+if [ -n "${PROMPT_ADMISSION_POOL_SIZE}" ]; then
+    TRAINER+=(trainer.prompt_admission_pool_size=${PROMPT_ADMISSION_POOL_SIZE})
+fi
+
+if [ -n "${PROMPT_ADMISSION_STATE_PATH}" ]; then
+    TRAINER+=(trainer.prompt_admission_state_path=${PROMPT_ADMISSION_STATE_PATH})
 fi
 
 if [ -n "${ROLLOUT_DATA_DIR}" ]; then

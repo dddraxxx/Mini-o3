@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import time
+from contextlib import contextmanager
 from pprint import pprint
 from typing import Any, Callable, Optional
 
@@ -82,6 +83,42 @@ logger.setLevel(logging.INFO)
 def _stage_log(message: str) -> None:
     if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
         logger.warning("[minio3-stage] %s", message)
+
+
+_DUMMY_LORA_PATCHED = False
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _patch_vllm_dummy_lora_if_requested() -> None:
+    """Skip V1 dummy LoRA activation for DP idle passes.
+
+    vLLM V1 executes dummy batches on data-parallel ranks that are idle while
+    other ranks still have active requests. With tensor-loaded LoRA adapters,
+    that dummy path can try to activate synthetic warmup adapters and surface a
+    CUDA illegal memory access in `set_lora()`. The dummy output is discarded,
+    so the Mini-o3 rollout path can skip only dummy LoRA activation while real
+    generation requests still use the loaded adapter.
+    """
+    global _DUMMY_LORA_PATCHED
+    if _DUMMY_LORA_PATCHED or not _env_truthy("VERL_VLLM_SKIP_DUMMY_LORA"):
+        return
+
+    try:
+        from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
+    except Exception as exc:  # pragma: no cover - version-dependent import guard
+        logger.warning("Failed to import vLLM LoRA mixin for dummy LoRA patch: %s", exc)
+        return
+
+    @contextmanager
+    def maybe_dummy_run_with_lora(self, lora_config, num_scheduled_tokens):
+        yield
+
+    LoRAModelRunnerMixin.maybe_dummy_run_with_lora = maybe_dummy_run_with_lora
+    _DUMMY_LORA_PATCHED = True
+    logger.warning("Patched vLLM V1 dummy LoRA activation for DP idle batches.")
 
 
 class vLLMHttpServer:
@@ -388,6 +425,7 @@ class vLLMHttpServer:
             await self.run_headless(server_args)
 
     async def run_server(self, args: argparse.Namespace):
+        _patch_vllm_dummy_lora_if_requested()
         engine_args = AsyncEngineArgs.from_cli_args(args)
         usage_context = UsageContext.OPENAI_API_SERVER
         vllm_config = engine_args.create_engine_config(usage_context=usage_context)
@@ -431,6 +469,7 @@ class vLLMHttpServer:
 
     async def run_headless(self, args: argparse.Namespace):
         """Run headless server in a separate thread."""
+        _patch_vllm_dummy_lora_if_requested()
         args.api_server_count = 0
 
         def run_headless_wrapper():

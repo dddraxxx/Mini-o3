@@ -18,6 +18,7 @@ import os
 import platform
 import signal
 import threading
+import time
 from types import MethodType
 from typing import Any, Literal, Optional, get_args
 
@@ -31,6 +32,13 @@ from verl.utils.vllm.vllm_fp8_utils import apply_vllm_fp8_patches, is_fp8_model,
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+
+def _minio3_stage_log(message: str) -> None:
+    if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
+        rank = os.getenv("RANK", "?")
+        logger.warning("[minio3-stage] vllm_worker.rank=%s %s", rank, message)
+
 
 # magic numbers that ensure we are using the same LoRA adapter during the rollout and training process
 VLLM_LORA_INT_ID = 123
@@ -166,12 +174,20 @@ class vLLMColocateWorkerExtension:
 
         from verl.workers.rollout.vllm_rollout.bucketed_weight_transfer import BucketedWeightReceiver
 
+        start_time = time.time()
+        _minio3_stage_log(
+            f"update_weights_from_ipc.start peft_config={peft_config is not None} "
+            f"base_sync_done={base_sync_done} use_shm={use_shm}"
+        )
+
         if current_platform.device_type == "npu" and self.device is None:
             self.device = torch.device(f"npu:{self.local_rank}")
 
         # In async mode, make sure the old lora is removed before adding the new one
         if peft_config and base_sync_done:
+            _minio3_stage_log("update_weights_from_ipc.remove_lora.start")
             self.remove_lora(VLLM_LORA_INT_ID)
+            _minio3_stage_log("update_weights_from_ipc.remove_lora.done")
 
         use_standard_weight_load = not (peft_config and base_sync_done) and not is_fp8_model(
             self.model_runner.vllm_config
@@ -198,11 +214,13 @@ class vLLMColocateWorkerExtension:
             device=self.device,
             use_shm=use_shm,
         )
+        _minio3_stage_log("update_weights_from_ipc.receive_weights.start")
         receiver.receive_weights(
             on_bucket_received=lambda weights: self._update_weights(
                 weights, peft_config=peft_config, base_sync_done=base_sync_done
             )
         )
+        _minio3_stage_log("update_weights_from_ipc.receive_weights.done")
 
         if self._is_qat_model:
             # QAT (compressed-tensors): call process_weights_after_loading AFTER all buckets are received
@@ -221,10 +239,14 @@ class vLLMColocateWorkerExtension:
 
             model = self.model_runner.model
             model_config = self.model_runner.vllm_config.model_config
+            _minio3_stage_log("update_weights_from_ipc.process_weights_after_loading.start")
             process_weights_after_loading(model, model_config, self.device)
+            _minio3_stage_log("update_weights_from_ipc.process_weights_after_loading.done")
+        _minio3_stage_log(f"update_weights_from_ipc.done elapsed_s={time.time() - start_time:.2f}")
 
     def _update_weights(self, weights: list[tuple[str, torch.Tensor]], peft_config: dict, base_sync_done: bool):
         if peft_config and base_sync_done:
+            _minio3_stage_log(f"_update_weights.add_lora.start tensors={len(weights)}")
             weights = dict(weights)
             lora_request = TensorLoRARequest(
                 lora_name=VLLM_LORA_NAME,
@@ -235,6 +257,7 @@ class vLLMColocateWorkerExtension:
             )
             self.add_lora(lora_request)
             logger.info(f"vLLM load weights, loaded_params: {len(weights)}")
+            _minio3_stage_log(f"_update_weights.add_lora.done tensors={len(weights)}")
         else:
             # Add the FP8 related logic here as sharding manager has been deprecated.
             # Check if FP8 quantization is enabled and apply appropriate weight loading
@@ -249,16 +272,36 @@ class vLLMColocateWorkerExtension:
 
     def _get_zmq_handle(self) -> str:
         """Get ZMQ handle for communication.
-        Uses Ray job id + replica_rank + local_rank to form the handle so it
-        matches the sender side regardless of CUDA_VISIBLE_DEVICES differences,
-        avoids collisions when multiple replicas share the same node, and is
-        unique per Ray job to avoid cross-job collisions on shared hosts. The
-        job id is forwarded by the vLLMHttpServer actor as VERL_RAY_JOB_ID and
-        inherited by this vLLM worker subprocess.
+
+        Uses Ray job id + replica_rank + node-local vLLM rank to form the handle.
+        In vLLM V1 DP workers, ``local_rank`` can be 0 inside every EngineCore
+        subprocess even when the process uses a distinct GPU. ``rank`` remains
+        unique across EngineCores, so reducing it by the local device count maps
+        it back to the colocated trainer rank used by ServerAdapter.
         """
         replica_rank = os.environ.get("VERL_REPLICA_RANK", "0")
         job_id = os.environ.get("VERL_RAY_JOB_ID", "0")
-        return f"ipc:///tmp/rl-colocate-zmq-{job_id}-replica-{replica_rank}-rank-{self.local_rank}.sock"
+        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("ASCEND_RT_VISIBLE_DEVICES")
+        visible_device_list = []
+        if visible_devices:
+            visible_device_list = [device.strip() for device in visible_devices.split(",") if device.strip()]
+
+        local_rank = getattr(self, "local_rank", 0)
+        rank = getattr(self, "rank", local_rank)
+        transfer_rank = int(rank)
+        if len(visible_device_list) == 1 and visible_device_list[0].isdigit():
+            # vLLM V1 uni DP starts each EngineCore with a single visible GPU
+            # while keeping rank/local_rank at 0. Match the trainer-side
+            # ServerAdapter rank by using that physical visible device id.
+            transfer_rank = int(visible_device_list[0])
+        elif visible_device_list:
+            transfer_rank %= len(visible_device_list)
+
+        _minio3_stage_log(
+            f"zmq_handle replica_rank={replica_rank} rank={rank} local_rank={local_rank} "
+            f"transfer_rank={transfer_rank} visible_devices={visible_devices}"
+        )
+        return f"ipc:///tmp/rl-colocate-zmq-{job_id}-replica-{replica_rank}-rank-{transfer_rank}.sock"
 
 
 class SuppressSignalInThread:

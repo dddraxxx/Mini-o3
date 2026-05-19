@@ -33,6 +33,18 @@ class TensorLoRARequest(LoRARequest):
     lora_tensors: dict = field(default=None)
 
 
+_TENSOR_LORA_CACHE: dict[int, tuple[dict, dict]] = {}
+
+
+def _cache_tensor_lora_request(lora_request: TensorLoRARequest) -> None:
+    if not lora_request.peft_config or not lora_request.lora_tensors:
+        return
+    _TENSOR_LORA_CACHE[lora_request.lora_int_id] = (
+        lora_request.peft_config,
+        {name: tensor.detach().cpu().clone() for name, tensor in lora_request.lora_tensors.items()},
+    )
+
+
 class VLLMHijack:
     @staticmethod
     def hijack():
@@ -63,6 +75,10 @@ class VLLMHijack:
                 if isinstance(lora_request, TensorLoRARequest):
                     peft_config = lora_request.peft_config
                     lora_tensors = lora_request.lora_tensors
+                    _cache_tensor_lora_request(lora_request)
+                    peft_helper = PEFTHelper.from_dict(peft_config)
+                elif lora_request.lora_int_id in _TENSOR_LORA_CACHE:
+                    peft_config, lora_tensors = _TENSOR_LORA_CACHE[lora_request.lora_int_id]
                     peft_helper = PEFTHelper.from_dict(peft_config)
                 else:
                     lora_path = get_adapter_absolute_path(lora_request.lora_path)
@@ -96,7 +112,7 @@ class VLLMHijack:
                     lora_request_kwargs["target_embedding_padding"] = (
                         self.vocab_size + self.lora_config.lora_extra_vocab_size
                     )
-                if isinstance(lora_request, TensorLoRARequest):
+                if lora_tensors is not None:
                     lora = self._lora_model_cls.from_lora_tensors(
                         tensors=lora_tensors,
                         **lora_request_kwargs,

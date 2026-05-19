@@ -139,6 +139,24 @@ trainer:
   # Directory for logging validation data; no dump if null
   validation_data_dir: null
 
+  # Whether to enable Mini-o3 prompt admission before PPO updates
+  prompt_admission_enable: False
+
+  # Number of prompt groups kept in the async admission pool; null means data.train_batch_size
+  prompt_admission_pool_size: null
+
+  # Minimum reward standard deviation required to admit one repeated prompt group
+  prompt_admission_reward_std_epsilon: 1.0e-4
+
+  # Seconds to wait for at least one async prompt group to finish before polling again
+  prompt_admission_wait_timeout_s: 0.1
+
+  # Whether to cancel unfinished async prompt groups once enough admitted groups are collected
+  prompt_admission_cancel_unfinished: True
+
+  # Optional JSONL path for cross-step prompt admission pending-state snapshots
+  prompt_admission_state_path: null
+
   # Number of nodes used in the training
   nnodes: 1
 

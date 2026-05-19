@@ -556,18 +556,57 @@ class AgentLoopWorker:
             f"rollout_n={config.n}"
         )
         t0 = time.monotonic()
+        task_start_times: dict[asyncio.Task, float] = {}
+        task_trajectories: dict[asyncio.Task, dict[str, Any]] = {}
         for i in range(len(batch)):
             trace_this_sample = i in traced_indices
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items() if k != "__do_sample__"}
             sample_sampling_params = dict(sampling_params)
             if not validate and per_sample_do_sample is not None and not bool(per_sample_do_sample[i]):
                 apply_greedy_sampling_params(sample_sampling_params)
-            tasks.append(
-                asyncio.create_task(
-                    self._run_agent_loop(sample_sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
-                )
+            task = asyncio.create_task(
+                self._run_agent_loop(sample_sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
             )
-        outputs = await asyncio.gather(*tasks)
+            tasks.append(task)
+            task_start_times[task] = time.monotonic()
+            task_trajectories[task] = trajectory_info[i]
+
+        status_interval = float(os.getenv("MINIO3_TRAJ_STATUS_INTERVAL_S", "30"))
+        pending_tasks = set(tasks)
+        while pending_tasks:
+            done_tasks, pending_tasks = await asyncio.wait(
+                pending_tasks,
+                timeout=max(status_interval, 1.0),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done_tasks:
+                try:
+                    task.result()
+                except Exception:
+                    for pending_task in pending_tasks:
+                        pending_task.cancel()
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
+                    raise
+            if pending_tasks:
+                now = time.monotonic()
+                active = sorted(
+                    (
+                        (now - task_start_times[task], task_trajectories[task])
+                        for task in pending_tasks
+                    ),
+                    reverse=True,
+                    key=lambda item: item[0],
+                )
+                preview = ",".join(
+                    f"{item[1]['sample_index']}:{item[1]['rollout_n']}:{item[0]:.0f}s"
+                    for item in active[:8]
+                )
+                _stage_log(
+                    f"worker.traj.running pid={os.getpid()} active={len(pending_tasks)}/{len(tasks)} "
+                    f"age_max_s={active[0][0]:.1f} preview=sample:rollout:age[{preview}]"
+                )
+
+        outputs = [task.result() for task in tasks]
         _stage_log(
             f"worker.batch.end pid={os.getpid()} batch={len(batch)} dt={time.monotonic() - t0:.3f}s"
         )
@@ -1007,11 +1046,15 @@ class AgentLoopWorker:
         # Keep a stable set of keys so downstream batch concat stays consistent across agent loops.
         extra_fields = {}
         default_extra_keys = {
+            "exceed_mask",
+            "exceed_reason",
             "turn_scores",
             "tool_rewards",
             "min_global_steps",
             "max_global_steps",
             "extras",
+            "void_mask",
+            "void_reason",
         }
         all_keys = set(key for input_item in inputs for key in input_item.extra_fields) | default_extra_keys
         for key in all_keys:
@@ -1083,6 +1126,8 @@ class AgentLoopManager:
 
         if not hasattr(self, "agent_loop_workers_class"):
             self.agent_loop_workers_class = ray.remote(AgentLoopWorker)
+        self._prompt_admission_running: dict[str, dict[str, Any]] = {}
+        self._prompt_admission_last_status_log = 0.0
 
     @classmethod
     @auto_await
@@ -1094,6 +1139,7 @@ class AgentLoopManager:
 
     async def _init_agent_loop_workers(self):
         self.agent_loop_workers = []
+        self._prompt_admission_inflight = []
         num_workers = self.rollout_config.agent.num_workers
 
         node_ids = [node["NodeID"] for node in ray.nodes() if node["Alive"] and node["Resources"].get("CPU", 0) > 0]
@@ -1113,6 +1159,7 @@ class AgentLoopManager:
                     self.reward_loop_worker_handles,
                 )
             )
+            self._prompt_admission_inflight.append(0)
 
     @auto_await
     async def generate_sequences(self, prompts: DataProto) -> DataProto:
@@ -1139,6 +1186,103 @@ class AgentLoopManager:
 
         output.meta_info = {"timing": timing, **outputs[0].meta_info}
         return output
+
+    def submit_prompt_group(self, prompts: DataProto, group_id: str) -> dict[str, Any]:
+        """Submit one prompt group to the least-inflight agent-loop worker."""
+        if not self.agent_loop_workers:
+            raise RuntimeError("AgentLoopManager has no workers")
+        worker_idx = min(range(len(self.agent_loop_workers)), key=lambda idx: self._prompt_admission_inflight[idx])
+        self._prompt_admission_inflight[worker_idx] += 1
+        submitted_at = time.monotonic()
+        ref = self.agent_loop_workers[worker_idx].generate_sequences.remote(prompts)
+        self._prompt_admission_running[group_id] = {
+            "worker_idx": worker_idx,
+            "batch_size": len(prompts),
+            "submitted_at": submitted_at,
+        }
+        self._log_prompt_admission_load("submit")
+        return {
+            "group_id": group_id,
+            "worker_idx": worker_idx,
+            "ref": ref,
+            "submitted_at": submitted_at,
+        }
+
+    def wait_prompt_groups(self, handles: list[dict[str, Any]], timeout: Optional[float] = None) -> list[dict[str, Any]]:
+        if not handles:
+            return []
+        refs = [handle["ref"] for handle in handles]
+        ready_refs, _ = ray.wait(refs, num_returns=1, timeout=timeout)
+        if not ready_refs:
+            self._log_prompt_admission_load("wait")
+            return []
+        self._log_prompt_admission_load("ready")
+        return [handle for handle in handles if any(handle["ref"] == ref for ref in ready_refs)]
+
+    def collect_prompt_group(self, handle: dict[str, Any]) -> DataProto:
+        worker_idx = int(handle["worker_idx"])
+        output = ray.get(handle["ref"])
+        self._prompt_admission_inflight[worker_idx] = max(0, self._prompt_admission_inflight[worker_idx] - 1)
+        self._prompt_admission_running.pop(str(handle.get("group_id")), None)
+        self._log_prompt_admission_load("collect")
+        metrics = output.meta_info.pop("metrics") if "metrics" in output.meta_info else []
+        if metrics:
+            output.meta_info = {
+                "timing": self._performance_metrics([metrics], output),
+                **output.meta_info,
+            }
+        else:
+            output.meta_info = {"timing": {}, **output.meta_info}
+        return output
+
+    def cancel_prompt_group(self, handle: dict[str, Any]) -> bool:
+        worker_idx = int(handle["worker_idx"])
+        cancelled = True
+        try:
+            ray.cancel(handle["ref"], force=False)
+        except Exception:
+            cancelled = False
+        self._prompt_admission_inflight[worker_idx] = max(0, self._prompt_admission_inflight[worker_idx] - 1)
+        self._prompt_admission_running.pop(str(handle.get("group_id")), None)
+        self._log_prompt_admission_load("cancel")
+        return cancelled
+
+    def prompt_admission_status(self) -> dict[str, Any]:
+        inflight = list(getattr(self, "_prompt_admission_inflight", []))
+        now = time.monotonic()
+        running = getattr(self, "_prompt_admission_running", {})
+        ages = [now - float(item["submitted_at"]) for item in running.values()]
+        return {
+            "worker_inflight": inflight,
+            "max_worker_inflight": max(inflight) if inflight else 0,
+            "total_inflight": sum(inflight),
+            "running_groups": len(running),
+            "running_age_max_s": max(ages) if ages else 0.0,
+            "running_age_mean_s": float(np.mean(ages)) if ages else 0.0,
+        }
+
+    def _log_prompt_admission_load(self, reason: str) -> None:
+        if os.getenv("MINIO3_STAGE_LOG", "0") != "1":
+            return
+        interval = float(os.getenv("MINIO3_TRAJ_STATUS_INTERVAL_S", "30"))
+        now = time.monotonic()
+        if now - self._prompt_admission_last_status_log < max(interval, 1.0):
+            return
+        self._prompt_admission_last_status_log = now
+        inflight = list(getattr(self, "_prompt_admission_inflight", []))
+        running = getattr(self, "_prompt_admission_running", {})
+        ages = []
+        for group_id, info in running.items():
+            age = now - float(info["submitted_at"])
+            ages.append((age, group_id, int(info["worker_idx"]), int(info["batch_size"])))
+        ages.sort(reverse=True, key=lambda item: item[0])
+        preview = ",".join(f"{group[:8]}:w{worker}:b{batch}:{age:.0f}s" for age, group, worker, batch in ages[:8])
+        _stage_log(
+            f"prompt_admission.load reason={reason} running_groups={len(running)} "
+            f"total_inflight={sum(inflight)} max_worker_inflight={max(inflight) if inflight else 0} "
+            f"worker_inflight={inflight} age_max_s={ages[0][0] if ages else 0.0:.1f} "
+            f"preview=group:worker:batch:age[{preview}]"
+        )
 
     def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
         timing = {}

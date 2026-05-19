@@ -21,7 +21,7 @@ This trainer supports model-agonistic model initialization with huggingface
 import json
 import os
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from pprint import pprint
 from typing import Any, Optional
@@ -71,6 +71,28 @@ from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.config import DistillationConfig, EngineConfig
 from verl.workers.rollout.llm_server import LLMServerManager
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
+
+
+def _minio3_stage_log(message: str) -> None:
+    if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
+        print(f"[minio3-stage] {message}", flush=True)
+
+
+def _align_non_tensor_batch_keys(data: list[DataProto]) -> None:
+    """Pad missing non-tensor keys so DataProto.concat is stable across admitted prompt groups."""
+    if not data:
+        return
+
+    all_keys = set()
+    for item in data:
+        all_keys.update(item.non_tensor_batch.keys())
+
+    for item in data:
+        missing_keys = all_keys - set(item.non_tensor_batch.keys())
+        for key in missing_keys:
+            values = np.empty(len(item), dtype=object)
+            values[:] = None
+            item.non_tensor_batch[key] = values
 
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty="kl"):
@@ -190,6 +212,23 @@ def apply_minio3_loss_masks(data: DataProto, actor_config) -> dict[str, float]:
         metrics["batch/minio3_loss_mask_zeroed_ratio"] = masks_to_zero.float().mean().item()
 
     return metrics
+
+
+def prompt_admission_reward_stats(reward_tensor: torch.Tensor, epsilon: float) -> tuple[bool, dict[str, float]]:
+    """Admit a prompt group only when its repeated rollouts have non-constant rewards."""
+    sequence_rewards = reward_tensor.sum(dim=-1).detach().float().cpu()
+    if sequence_rewards.numel() < 2:
+        reward_std = 0.0
+    else:
+        reward_std = sequence_rewards.std(unbiased=False).item()
+    accepted = reward_std >= epsilon
+    stats = {
+        "reward_mean": sequence_rewards.mean().item() if sequence_rewards.numel() else 0.0,
+        "reward_std": reward_std,
+        "reward_min": sequence_rewards.min().item() if sequence_rewards.numel() else 0.0,
+        "reward_max": sequence_rewards.max().item() if sequence_rewards.numel() else 0.0,
+    }
+    return accepted, stats
 
 
 def compute_advantage(
@@ -705,6 +744,254 @@ class RayPPOTrainer:
         assert self.reward_loop_manager is not None, "RewardLoopManager is None"
         batch_reward = self.reward_loop_manager.compute_rm_score(batch)
         return batch_reward
+
+    def _prompt_admission_enabled(self) -> bool:
+        value = self.config.trainer.get("prompt_admission_enable", False)
+        if isinstance(value, str):
+            return value.lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _prompt_admission_pending_groups(self) -> deque:
+        if not hasattr(self, "_mini_o3_prompt_admission_pending"):
+            self._mini_o3_prompt_admission_pending = deque()
+        return self._mini_o3_prompt_admission_pending
+
+    def _prepare_prompt_admission_groups(self, batch_dict: dict[str, Any]) -> list[dict[str, Any]]:
+        prompt_input_batch: DataProto = DataProto.from_single_dict(batch_dict)
+        prompt_input_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
+        prompt_input_batch.non_tensor_batch["uid"] = np.array(
+            [str(uuid.uuid4()) for _ in range(len(prompt_input_batch.batch))], dtype=object
+        )
+        rollout_prompt_batch = self._get_gen_batch(prompt_input_batch)
+        rollout_prompt_batch.meta_info["global_steps"] = self.global_steps
+
+        groups = []
+        for idx in range(len(rollout_prompt_batch)):
+            groups.append(
+                {
+                    "group_id": uuid.uuid4().hex,
+                    "prompt_input": prompt_input_batch.slice(idx, idx + 1),
+                    "rollout_prompt": rollout_prompt_batch.slice(idx, idx + 1),
+                    "status": "pending",
+                    "attempts": 0,
+                    "created_step": int(self.global_steps),
+                    "last_update_step": int(self.global_steps),
+                }
+            )
+        return groups
+
+    def _prompt_admission_reward_stats(
+        self, reward_tensor: torch.Tensor, epsilon: float
+    ) -> tuple[bool, dict[str, float]]:
+        return prompt_admission_reward_stats(reward_tensor, epsilon)
+
+    def _build_prompt_admission_group_batch(
+        self, group: dict[str, Any], output: DataProto
+    ) -> tuple[DataProto, torch.Tensor, dict[str, Any]]:
+        rollout_n = self.config.actor_rollout_ref.rollout.n
+        group_batch = group["prompt_input"].repeat(repeat_times=rollout_n, interleave=True)
+        group_batch = group_batch.union(output)
+        if "response_mask" not in group_batch.batch.keys():
+            group_batch.batch["response_mask"] = compute_response_mask(group_batch)
+        if "rm_scores" not in group_batch.batch.keys():
+            group_reward = self._compute_reward_colocate(group_batch)
+            group_batch = group_batch.union(group_reward)
+        reward_tensor, reward_extra_infos_dict = extract_reward(group_batch)
+        return group_batch, reward_tensor, reward_extra_infos_dict
+
+    def _save_prompt_admission_state(self, metrics: dict[str, Any]) -> None:
+        save_path = self.config.trainer.get("prompt_admission_state_path", None)
+        if not save_path:
+            return
+        pending = self._prompt_admission_pending_groups()
+        row = {
+            "step": int(self.global_steps),
+            "pending_group_count": len(pending),
+            "pending_groups": [
+                {
+                    "group_id": group.get("group_id"),
+                    "status": group.get("status"),
+                    "attempts": int(group.get("attempts", 0)),
+                    "created_step": int(group.get("created_step", self.global_steps)),
+                    "last_update_step": int(group.get("last_update_step", self.global_steps)),
+                }
+                for group in list(pending)
+            ],
+            "metrics": {key: float(value) for key, value in metrics.items() if isinstance(value, (int, float))},
+        }
+        save_dir = os.path.dirname(save_path)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+        with open(save_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    def _collect_prompt_admitted_batch(
+        self,
+        initial_batch_dict: dict[str, Any],
+        train_iterator,
+        metrics: dict[str, Any],
+    ) -> tuple[DataProto, torch.Tensor, dict[str, Any]]:
+        if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
+            raise ValueError("prompt admission does not support REMAX yet")
+
+        rollout_n = self.config.actor_rollout_ref.rollout.n
+        target_prompt_groups = int(self.config.data.train_batch_size)
+        pool_size = int(self.config.trainer.get("prompt_admission_pool_size", 0) or target_prompt_groups)
+        pool_size = max(1, pool_size)
+        epsilon = float(self.config.trainer.get("prompt_admission_reward_std_epsilon", 1e-4))
+        wait_timeout = float(self.config.trainer.get("prompt_admission_wait_timeout_s", 0.1))
+        cancel_unfinished_value = self.config.trainer.get("prompt_admission_cancel_unfinished", True)
+        if isinstance(cancel_unfinished_value, str):
+            cancel_unfinished = cancel_unfinished_value.lower() in {"1", "true", "yes", "on"}
+        else:
+            cancel_unfinished = bool(cancel_unfinished_value)
+        max_num_gen_batches = int(self.config.algorithm.get("max_num_gen_batches", 0) or 0)
+        max_submitted_groups = target_prompt_groups * max_num_gen_batches if max_num_gen_batches > 0 else 0
+
+        pending = self._prompt_admission_pending_groups()
+        pending.extend(self._prepare_prompt_admission_groups(initial_batch_dict))
+
+        running: list[dict[str, Any]] = []
+        accepted_batches: list[DataProto] = []
+        submitted_groups = 0
+        fetched_batches = 0
+        source_exhausted = False
+        admission_metrics: dict[str, float] = defaultdict(float)
+
+        def fetch_more_groups() -> bool:
+            nonlocal fetched_batches, source_exhausted
+            if source_exhausted:
+                return False
+            try:
+                next_batch_dict = next(train_iterator)
+            except StopIteration:
+                source_exhausted = True
+                return False
+            pending.extend(self._prepare_prompt_admission_groups(next_batch_dict))
+            fetched_batches += 1
+            admission_metrics["prompt_admission/fetched_batches"] = float(fetched_batches)
+            return True
+
+        def can_submit_more() -> bool:
+            return max_submitted_groups <= 0 or submitted_groups < max_submitted_groups
+
+        def needed_running_slots() -> int:
+            return max(0, target_prompt_groups - len(accepted_batches) - len(running))
+
+        def submit_pending_groups() -> None:
+            nonlocal submitted_groups
+            while pending and len(running) < pool_size and needed_running_slots() > 0 and can_submit_more():
+                group = pending.popleft()
+                group["status"] = "running"
+                group["attempts"] = int(group.get("attempts", 0)) + 1
+                group["last_update_step"] = int(self.global_steps)
+                group["rollout_prompt"].meta_info["global_steps"] = self.global_steps
+                rollout_prompt = group["rollout_prompt"].repeat(repeat_times=rollout_n, interleave=True)
+                handle = self.async_rollout_manager.submit_prompt_group(rollout_prompt, group["group_id"])
+                handle["group"] = group
+                running.append(handle)
+                submitted_groups += 1
+                admission_metrics["prompt_admission/submitted_groups"] = float(submitted_groups)
+
+        while len(accepted_batches) < target_prompt_groups:
+            while len(pending) + len(running) < pool_size and can_submit_more():
+                if not fetch_more_groups():
+                    break
+
+            submit_pending_groups()
+            if not running:
+                if len(accepted_batches) >= target_prompt_groups:
+                    break
+                if not can_submit_more():
+                    raise ValueError(
+                        f"prompt admission hit max_num_gen_batches={max_num_gen_batches} "
+                        f"with {len(accepted_batches)} accepted groups < target {target_prompt_groups}"
+                    )
+                if source_exhausted and not pending:
+                    raise RuntimeError(
+                        f"prompt admission exhausted dataloader with {len(accepted_batches)} accepted groups "
+                        f"< target {target_prompt_groups}"
+                    )
+                continue
+
+            ready_handles = self.async_rollout_manager.wait_prompt_groups(running, timeout=wait_timeout)
+            if not ready_handles:
+                admission_metrics["prompt_admission/wait_timeouts"] += 1.0
+                continue
+
+            for handle in ready_handles:
+                if not any(item is handle for item in running):
+                    continue
+                running = [item for item in running if item is not handle]
+                group = handle["group"]
+                output = self.async_rollout_manager.collect_prompt_group(handle)
+                group_timing = output.meta_info.pop("timing", {})
+                for key, value in group_timing.items():
+                    if isinstance(value, (int, float)):
+                        admission_metrics[f"prompt_admission/timing/{key}"] += float(value)
+                group_batch, reward_tensor, _ = self._build_prompt_admission_group_batch(group, output)
+                accepted, reward_stats = self._prompt_admission_reward_stats(reward_tensor, epsilon)
+                for key, value in reward_stats.items():
+                    admission_metrics[f"prompt_admission/last_{key}"] = float(value)
+                if accepted:
+                    group["status"] = "accepted"
+                    accepted_batches.append(group_batch)
+                    admission_metrics["prompt_admission/accepted_groups"] = float(len(accepted_batches))
+                else:
+                    group["status"] = "rejected"
+                    admission_metrics["prompt_admission/rejected_groups"] += 1.0
+                _minio3_stage_log(
+                    "prompt_admission.group.done "
+                    f"group_id={group.get('group_id')} accepted={accepted} "
+                    f"accepted={len(accepted_batches)}/{target_prompt_groups} "
+                    f"rejected={int(admission_metrics['prompt_admission/rejected_groups'])} "
+                    f"submitted={submitted_groups} running={len(running)} pending={len(pending)} "
+                    f"reward_std={reward_stats.get('reward_std', float('nan')):.6g}"
+                )
+                self._save_prompt_admission_state(admission_metrics)
+
+                if len(accepted_batches) >= target_prompt_groups:
+                    _minio3_stage_log(
+                        "prompt_admission.target_filled "
+                        f"accepted={len(accepted_batches)} submitted={submitted_groups} "
+                        f"running={len(running)} pending={len(pending)}"
+                    )
+                    break
+
+        if running:
+            admission_metrics["prompt_admission/unfinished_running_groups"] = float(len(running))
+            for handle in running:
+                group = handle["group"]
+                group["status"] = "pending"
+                group["last_update_step"] = int(self.global_steps)
+                pending.append(group)
+                if cancel_unfinished and self.async_rollout_manager.cancel_prompt_group(handle):
+                    admission_metrics["prompt_admission/cancelled_running_groups"] += 1.0
+
+        admitted_batches = accepted_batches[:target_prompt_groups]
+        _align_non_tensor_batch_keys(admitted_batches)
+        admitted_batch = DataProto.concat(admitted_batches)
+        reward_tensor, reward_extra_infos_dict = extract_reward(admitted_batch)
+
+        admission_metrics["prompt_admission/enabled"] = 1.0
+        admission_metrics["prompt_admission/target_groups"] = float(target_prompt_groups)
+        admission_metrics["prompt_admission/pool_size"] = float(pool_size)
+        admission_metrics["prompt_admission/pending_groups"] = float(len(pending))
+        admission_metrics["prompt_admission/submitted_per_accepted"] = float(submitted_groups) / max(
+            1.0, float(len(accepted_batches))
+        )
+        admission_metrics["prompt_admission/reused_pending_groups"] = float(
+            sum(1 for group in pending if int(group.get("attempts", 0)) > 0)
+        )
+        for key, value in self.async_rollout_manager.prompt_admission_status().items():
+            if isinstance(value, (int, float)):
+                admission_metrics[f"prompt_admission/{key}"] = float(value)
+            elif key == "worker_inflight":
+                for worker_idx, inflight in enumerate(value):
+                    admission_metrics[f"prompt_admission/worker_{worker_idx}_inflight"] = float(inflight)
+        metrics.update(admission_metrics)
+        self._save_prompt_admission_state(admission_metrics)
+        return admitted_batch, reward_tensor, reward_extra_infos_dict
 
     def _validate(self, merged: bool = False):
         data_source_lst = []
@@ -1543,7 +1830,12 @@ class RayPPOTrainer:
         next_step_profile = False
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
+            train_iterator = iter(self.train_dataloader)
+            while True:
+                try:
+                    batch_dict = next(train_iterator)
+                except StopIteration:
+                    break
                 if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
                 metrics = {}
@@ -1586,39 +1878,48 @@ class RayPPOTrainer:
 
                 is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
-                    # generate a batch
-                    with marked_timer("gen", timing_raw, color="red"):
-                        if curr_step_profile:
-                            self.llm_server_manager.start_profile()
-                        combined_gen_output = self.async_rollout_manager.generate_sequences(combined_gen_batch)
-                        self.checkpoint_manager.sleep_replicas()
-                        if curr_step_profile:
-                            self.llm_server_manager.stop_profile()
+                    if self._prompt_admission_enabled():
+                        with marked_timer("gen", timing_raw, color="red"):
+                            if curr_step_profile:
+                                self.llm_server_manager.start_profile()
+                            batch, _, _ = self._collect_prompt_admitted_batch(batch_dict, train_iterator, metrics)
+                            self.checkpoint_manager.sleep_replicas()
+                            if curr_step_profile:
+                                self.llm_server_manager.stop_profile()
+                    else:
+                        # generate a batch
+                        with marked_timer("gen", timing_raw, color="red"):
+                            if curr_step_profile:
+                                self.llm_server_manager.start_profile()
+                            combined_gen_output = self.async_rollout_manager.generate_sequences(combined_gen_batch)
+                            self.checkpoint_manager.sleep_replicas()
+                            if curr_step_profile:
+                                self.llm_server_manager.stop_profile()
 
-                        timing_raw.update(combined_gen_output.meta_info["timing"])
-                        combined_gen_output.meta_info.pop("timing", None)
+                            timing_raw.update(combined_gen_output.meta_info["timing"])
+                            combined_gen_output.meta_info.pop("timing", None)
 
-                    gen_batch_output = combined_gen_output.slice(0, num_sampled_prompts)
-                    if "__do_sample__" in gen_batch_output.non_tensor_batch:
-                        gen_batch_output.pop(non_tensor_batch_keys=["__do_sample__"])
+                        gen_batch_output = combined_gen_output.slice(0, num_sampled_prompts)
+                        if "__do_sample__" in gen_batch_output.non_tensor_batch:
+                            gen_batch_output.pop(non_tensor_batch_keys=["__do_sample__"])
 
-                    if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
-                        gen_baseline_output = combined_gen_output.slice(num_sampled_prompts, None)
-                        if "__do_sample__" in gen_baseline_output.non_tensor_batch:
-                            gen_baseline_output.pop(non_tensor_batch_keys=["__do_sample__"])
+                        if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
+                            gen_baseline_output = combined_gen_output.slice(num_sampled_prompts, None)
+                            if "__do_sample__" in gen_baseline_output.non_tensor_batch:
+                                gen_baseline_output.pop(non_tensor_batch_keys=["__do_sample__"])
 
-                        if self.use_rm and "rm_scores" not in gen_baseline_output.batch.keys():
-                            baseline_reward = self._compute_reward_colocate(gen_baseline_output)
-                            gen_baseline_output = gen_baseline_output.union(baseline_reward)
+                            if self.use_rm and "rm_scores" not in gen_baseline_output.batch.keys():
+                                baseline_reward = self._compute_reward_colocate(gen_baseline_output)
+                                gen_baseline_output = gen_baseline_output.union(baseline_reward)
 
-                        reward_baseline_tensor = gen_baseline_output.batch["rm_scores"].sum(dim=-1)
-                        batch.batch["reward_baselines"] = reward_baseline_tensor
+                            reward_baseline_tensor = gen_baseline_output.batch["rm_scores"].sum(dim=-1)
+                            batch.batch["reward_baselines"] = reward_baseline_tensor
 
-                        del gen_baseline_output
-                    del combined_gen_batch, combined_gen_output
-                    # repeat to align with repeated responses in rollout
-                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                    batch = batch.union(gen_batch_output)
+                            del gen_baseline_output
+                        del combined_gen_batch, combined_gen_output
+                        # repeat to align with repeated responses in rollout
+                        batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                        batch = batch.union(gen_batch_output)
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
@@ -1633,8 +1934,8 @@ class RayPPOTrainer:
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
                     # get images_seqlens
                     images_seqlens_all = []
-                    for multi_modal_input in batch.non_tensor_batch["multi_modal_inputs"]:
-                        if "image_grid_thw" not in multi_modal_input.keys():
+                    for multi_modal_input in batch.non_tensor_batch.get("multi_modal_inputs", []):
+                        if not isinstance(multi_modal_input, dict) or "image_grid_thw" not in multi_modal_input.keys():
                             continue
                         images_seqlens_all.extend(multi_modal_input["images_seqlens"].tolist())
                     batch.meta_info["images_seqlens"] = images_seqlens_all

@@ -14,6 +14,7 @@
 import functools
 import logging
 import os
+import time
 from contextlib import nullcontext
 from copy import deepcopy
 from functools import partial
@@ -56,6 +57,12 @@ from verl.workers.utils.losses import ppo_loss
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+
+def _minio3_stage_log(message: str) -> None:
+    if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
+        rank = os.getenv("RANK", "?")
+        logger.warning("[minio3-stage] training_worker.rank=%s %s", rank, message)
 
 
 def _with_routing_replay_flag(enabled: bool):
@@ -688,13 +695,23 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                   trainer/rollout deployments.
         """
 
+        start_time = time.time()
+
         # Resolve mode: "auto" falls back to config, explicit values take precedence
         effective_mode = mode if mode != "auto" else self.config.rollout.checkpoint_engine.backend
+        _minio3_stage_log(
+            f"update_weights.start global_steps={global_steps} mode={mode} effective_mode={effective_mode} "
+            f"peft_merge={self.peft_merge} base_sync_done={self.base_sync_done} "
+            f"free_cache_engine={self.config.rollout.free_cache_engine}"
+        )
 
         # 0. send_weights only for async training with disaggregated trainer and rollout
         if effective_mode != "naive":
+            _minio3_stage_log("update_weights.checkpoint_engine.get_per_tensor_param.start")
             per_tensor_param, _ = self.actor.engine.get_per_tensor_param()
+            _minio3_stage_log("update_weights.checkpoint_engine.send_weights.start")
             await self.checkpoint_engine.send_weights(per_tensor_param)
+            _minio3_stage_log(f"update_weights.checkpoint_engine.done elapsed_s={time.time() - start_time:.2f}")
             return
 
         set_expandable_segments(False)
@@ -702,46 +719,63 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # 1. resume rollout memory (weights were released during sleep)
         if self.config.rollout.free_cache_engine:
+            _minio3_stage_log("update_weights.resume_weights.start")
             await self.rollout.resume(tags=["weights"])
+            _minio3_stage_log("update_weights.resume_weights.done")
         log_gpu_memory_usage("After resume weights", logger=logger)
 
         # 2. determine if we need a base weight sync (adapter path only)
+        _minio3_stage_log("update_weights.get_adapter_params.start")
         per_tensor_param, peft_config = self.actor.engine.get_per_tensor_param(
             layered_summon=self.layered_summon, base_sync_done=True
         )
+        _minio3_stage_log(f"update_weights.get_adapter_params.done peft_config={peft_config is not None}")
 
         do_lora_base_sync = False
         if not self.peft_merge and peft_config is not None:
             self.rollout.sleep_level = 1
             do_lora_base_sync = not self.base_sync_done
+        _minio3_stage_log(f"update_weights.sync_plan do_lora_base_sync={do_lora_base_sync}")
 
         # 3. sync weights: For SGLang, we need base first (when needed), then adapter/merged
         if do_lora_base_sync:
+            _minio3_stage_log("update_weights.get_base_params.start")
             per_tensor_param_base, peft_config = self.actor.engine.get_per_tensor_param(
                 layered_summon=self.layered_summon, base_sync_done=False
             )
+            _minio3_stage_log("update_weights.rollout_update_base.start")
             await self.rollout.update_weights(
                 per_tensor_param_base, peft_config=peft_config, base_sync_done=False, global_steps=global_steps
             )
+            _minio3_stage_log("update_weights.rollout_update_base.done")
 
+        _minio3_stage_log("update_weights.rollout_update_adapter.start")
         await self.rollout.update_weights(
             per_tensor_param, peft_config=peft_config, base_sync_done=True, global_steps=global_steps
         )
+        _minio3_stage_log("update_weights.rollout_update_adapter.done")
 
         log_gpu_memory_usage("After update_weights", logger=logger)
 
         # 3. offload model to cpu
         if self.actor.engine.is_param_offload_enabled:
+            _minio3_stage_log("update_weights.actor_offload.start")
             self.actor.engine.to("cpu", model=True, optimizer=False, grad=False)
+            _minio3_stage_log("update_weights.actor_offload.done")
+        _minio3_stage_log("update_weights.empty_cache.start")
         aggressive_empty_cache(force_sync=True)
+        _minio3_stage_log("update_weights.empty_cache.done")
 
         # 4. resume kv_cache
         if self.config.rollout.free_cache_engine:
+            _minio3_stage_log("update_weights.resume_kv_cache.start")
             await self.rollout.resume(tags=["kv_cache"])
+            _minio3_stage_log("update_weights.resume_kv_cache.done")
         log_gpu_memory_usage("After resume kv_cache", logger=logger)
 
         self.base_sync_done = True
         set_expandable_segments(True)
+        _minio3_stage_log(f"update_weights.done elapsed_s={time.time() - start_time:.2f}")
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE, blocking=False)
     def execute_checkpoint_engine(self, method: str, *args, **kwargs):
