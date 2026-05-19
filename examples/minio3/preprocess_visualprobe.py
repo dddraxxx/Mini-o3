@@ -63,10 +63,8 @@ def _convert_row(
 
     answer = row.get("solution", row.get("answer", row.get("ground_truth", "")))
     data_source = row.get("data_source") or f"minio3_{split}"
-    image_payload = [
-        {"image": _resolve_image_path(image_root, path), "min_pixels": min_pixels, "max_pixels": max_pixels}
-        for path in images
-    ]
+    image_paths = [_resolve_image_path(image_root, path) for path in images]
+    image_payload = [{"image": path, "min_pixels": min_pixels, "max_pixels": max_pixels} for path in image_paths]
 
     return {
         "data_source": data_source,
@@ -82,6 +80,7 @@ def _convert_row(
             "split": split,
             "index": row.get("doc_id", idx),
             "doc_id": row.get("doc_id", idx),
+            "image_paths": image_paths,
             "answer": answer,
             "question": problem,
             "tool_selection": ["tool_crop"],

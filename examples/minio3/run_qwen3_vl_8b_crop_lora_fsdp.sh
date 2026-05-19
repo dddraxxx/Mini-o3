@@ -80,11 +80,23 @@ VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-False}
 VAL_ONLY=${VAL_ONLY:-False}
 LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-0}
 RUN_DIR=${RUN_DIR:-}
+LOGGER_BACKENDS=${LOGGER_BACKENDS:-'["console","wandb"]'}
+ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-}
+VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-}
+TRAIN_SAMPLES_JSONL=${TRAIN_SAMPLES_JSONL:-}
+TRAIN_SAMPLES_JSONL_LIMIT=${TRAIN_SAMPLES_JSONL_LIMIT:-16}
 
 PROJECT_NAME=${PROJECT_NAME:-minio3_official_verl}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-qwen3_vl_8b_crop_lora_$(date +%Y%m%d_%H%M)}
 TOOL_CONFIG_PATH=${TOOL_CONFIG_PATH:-$PROJECT_DIR/examples/minio3/config/tool_config/minio3_crop_tool.yaml}
 REWARD_FN_PATH=${REWARD_FN_PATH:-$PROJECT_DIR/examples/minio3/minio3_reward.py}
+
+if [[ -n "${RUN_DIR}" && "${LOGGER_BACKENDS}" == *\"file\"* && -z "${VERL_FILE_LOGGER_PATH:-}" ]]; then
+    export VERL_FILE_LOGGER_PATH="$RUN_DIR/train_step_metrics.jsonl"
+fi
+if [[ -n "${VERL_FILE_LOGGER_PATH:-}" ]]; then
+    mkdir -p "$(dirname "$VERL_FILE_LOGGER_PATH")"
+fi
 
 DATA=(
     algorithm.adv_estimator=grpo
@@ -200,7 +212,7 @@ fi
 
 TRAINER=(
     trainer.balance_batch=True
-    trainer.logger='["console","wandb"]'
+    "trainer.logger=${LOGGER_BACKENDS}"
     trainer.project_name=${PROJECT_NAME}
     trainer.experiment_name=${EXPERIMENT_NAME}
     trainer.n_gpus_per_node=${NGPUS_PER_NODE}
@@ -225,6 +237,21 @@ fi
 
 if [ -n "${RUN_DIR}" ]; then
     TRAINER+=(trainer.default_local_dir=${RUN_DIR})
+fi
+
+if [ -n "${ROLLOUT_DATA_DIR}" ]; then
+    TRAINER+=(trainer.rollout_data_dir=${ROLLOUT_DATA_DIR})
+fi
+
+if [ -n "${VALIDATION_DATA_DIR}" ]; then
+    TRAINER+=(trainer.validation_data_dir=${VALIDATION_DATA_DIR})
+fi
+
+if [ -n "${TRAIN_SAMPLES_JSONL}" ]; then
+    TRAINER+=(
+        +trainer.train_samples_jsonl=${TRAIN_SAMPLES_JSONL}
+        +trainer.train_samples_jsonl_limit=${TRAIN_SAMPLES_JSONL_LIMIT}
+    )
 fi
 
 "${PYTHON_CMD[@]}" -m verl.trainer.main_ppo \

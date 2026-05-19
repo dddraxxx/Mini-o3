@@ -55,6 +55,7 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | `MAX_NUM_SEQS` | `128` | `256` |
 | `SAVE_FREQ` | `10` | `10` |
 | `SAVE_LORA_ONLY` | `True` | `True` |
+| logging | `train_step_metrics.jsonl`, `rollout_generations/`, `validation_generations/`, `train_samples.jsonl` | same |
 | actor/ref offload | enabled | enabled |
 | LoRA | rank `8`, alpha `16`, text-layer q/k/v/o/mlp regex | same |
 

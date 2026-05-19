@@ -430,6 +430,49 @@ class RayPPOTrainer:
 
         print(f"Dumped generations to {filename}")
 
+    @staticmethod
+    def _extract_image_paths(sample_non_tensor_batch: dict) -> list[str]:
+        """Extract original image path references without serializing image bytes."""
+        extra_info = sample_non_tensor_batch.get("extra_info") or {}
+        image_paths = extra_info.get("image_paths") or extra_info.get("images")
+        if image_paths is not None:
+            if isinstance(image_paths, str):
+                return [image_paths]
+            return [str(path) for path in image_paths if path is not None]
+
+        paths: list[str] = []
+
+        def visit(value):
+            if isinstance(value, dict):
+                image = value.get("image")
+                if isinstance(image, str):
+                    paths.append(image)
+                elif isinstance(image, dict) and isinstance(image.get("image"), str):
+                    paths.append(image["image"])
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    visit(child)
+
+        visit(sample_non_tensor_batch.get("raw_prompt"))
+        return paths
+
+    @staticmethod
+    def _write_train_samples_jsonl(entries: list[dict], output_path: str, limit: int | None):
+        """Append Mini-o3-compatible training sample rows to a single JSONL file."""
+        if limit is not None and limit >= 0:
+            entries = entries[:limit]
+        if not entries:
+            return
+
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "a") as f:
+            for entry in entries:
+                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+        print(f"Appended {len(entries)} train samples to {output_path}")
+
     def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL asynchronously."""
         global_steps = self.global_steps
@@ -449,6 +492,17 @@ class RayPPOTrainer:
         for f in self._dump_futures:
             if f.done():
                 f.result()  # re-raises if the write failed
+            else:
+                still_pending.append(f)
+        self._dump_futures = still_pending
+
+    def _dump_train_samples_jsonl(self, entries: list[dict], output_path: str, limit: int | None):
+        future = self._dump_executor.submit(self._write_train_samples_jsonl, entries, output_path, limit)
+        self._dump_futures.append(future)
+        still_pending = []
+        for f in self._dump_futures:
+            if f.done():
+                f.result()
             else:
                 still_pending.append(f)
         self._dump_futures = still_pending
@@ -480,6 +534,7 @@ class RayPPOTrainer:
             outputs = self.tokenizer.batch_decode(batch.batch["responses"], skip_special_tokens=True)
             scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
             sample_gts = [item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in batch]
+            sample_non_tensors = [item.non_tensor_batch for item in batch]
 
             reward_extra_infos_to_dump = {
                 k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in reward_extra_infos_dict.items()
@@ -490,14 +545,59 @@ class RayPPOTrainer:
                     batch.non_tensor_batch["request_id"].tolist(),
                 )
 
-            self._dump_generations(
-                inputs=inputs,
-                outputs=outputs,
-                gts=sample_gts,
-                scores=scores,
-                reward_extra_infos_dict=reward_extra_infos_to_dump,
-                dump_path=rollout_data_dir,
-            )
+            n = len(inputs)
+            image_paths = [self._extract_image_paths(sample) for sample in sample_non_tensors]
+            if any(image_paths):
+                reward_extra_infos_to_dump["image_paths"] = image_paths
+            for key in ("uid", "data_source"):
+                if key in batch.non_tensor_batch:
+                    values = batch.non_tensor_batch[key]
+                    reward_extra_infos_to_dump[key] = values.tolist() if hasattr(values, "tolist") else list(values)
+
+            if rollout_data_dir:
+                self._dump_generations(
+                    inputs=inputs,
+                    outputs=outputs,
+                    gts=sample_gts,
+                    scores=scores,
+                    reward_extra_infos_dict=reward_extra_infos_to_dump,
+                    dump_path=rollout_data_dir,
+                )
+
+            train_samples_jsonl = self.config.trainer.get("train_samples_jsonl", None)
+            if train_samples_jsonl:
+                rows = []
+                reward_values = reward_extra_infos_to_dump.get("reward", scores)
+                try:
+                    reward_values_len = len(reward_values)
+                except TypeError:
+                    reward_values_len = 0
+                for i in range(n):
+                    sample = sample_non_tensors[i]
+                    row = {
+                        "step": self.global_steps,
+                        "uid": sample.get("uid"),
+                        "data_source": sample.get("data_source"),
+                        "image_paths": image_paths[i],
+                        "ground_truth": sample_gts[i],
+                        "input": inputs[i],
+                        "output": outputs[i],
+                        "score": scores[i],
+                        "reward": reward_values[i] if reward_values_len == n else scores[i],
+                    }
+                    for key, values in reward_extra_infos_to_dump.items():
+                        try:
+                            values_len = len(values)
+                        except TypeError:
+                            continue
+                        if key in row or values_len != n:
+                            continue
+                        row[key] = values[i]
+                    rows.append(row)
+
+                limit = self.config.trainer.get("train_samples_jsonl_limit", 16)
+                limit = None if limit is None else int(limit)
+                self._dump_train_samples_jsonl(rows, train_samples_jsonl, limit)
 
     def _maybe_log_val_generations(self, inputs, outputs, scores):
         """Log a table of validation samples to the configured logger (wandb or swanlab)"""
@@ -558,6 +658,8 @@ class RayPPOTrainer:
         sample_scores = []
         sample_turns = []
         sample_uids = []
+        sample_image_paths = []
+        sample_data_sources = []
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -622,6 +724,7 @@ class RayPPOTrainer:
             input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
             sample_inputs.extend(input_texts)
             sample_uids.extend(test_batch.non_tensor_batch["uid"])
+            sample_image_paths.extend([self._extract_image_paths(item.non_tensor_batch) for item in test_batch])
 
             # evaluate using reward_function
             reward_tensor, reward_extra_info = extract_reward(test_batch)
@@ -642,19 +745,26 @@ class RayPPOTrainer:
             if "__num_turns__" in test_batch.non_tensor_batch:
                 sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
 
-            data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
+            data_sources = test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0])
+            data_source_lst.append(data_sources)
+            sample_data_sources.extend(data_sources.tolist() if hasattr(data_sources, "tolist") else list(data_sources))
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
         # dump generations
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if val_data_dir:
+            reward_extra_infos_to_dump = dict(reward_extra_infos_dict)
+            reward_extra_infos_to_dump["uid"] = list(sample_uids)
+            reward_extra_infos_to_dump["data_source"] = sample_data_sources
+            if any(sample_image_paths):
+                reward_extra_infos_to_dump["image_paths"] = sample_image_paths
             self._dump_generations(
                 inputs=sample_inputs,
                 outputs=sample_outputs,
                 gts=sample_gts,
                 scores=sample_scores,
-                reward_extra_infos_dict=reward_extra_infos_dict,
+                reward_extra_infos_dict=reward_extra_infos_to_dump,
                 dump_path=val_data_dir,
             )
 
@@ -1631,9 +1741,10 @@ class RayPPOTrainer:
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
 
-                    # Log rollout generations if enabled
+                    # Log rollout generations and Mini-o3-compatible train samples if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
-                    if rollout_data_dir:
+                    train_samples_jsonl = self.config.trainer.get("train_samples_jsonl", None)
+                    if rollout_data_dir or train_samples_jsonl:
                         self._log_rollout_data(batch, reward_extra_infos_dict, timing_raw, rollout_data_dir)
 
                 # validate
