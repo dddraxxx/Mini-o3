@@ -952,7 +952,11 @@ class RayPPOTrainer:
         )
 
         self.actor_rollout_wg.save_checkpoint(
-            actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep
+            actor_local_path,
+            actor_remote_path,
+            self.global_steps,
+            max_ckpt_to_keep=max_actor_ckpt_to_keep,
+            save_lora_only=self.config.trainer.get("save_lora_only", False),
         )
 
         if self.use_critic:

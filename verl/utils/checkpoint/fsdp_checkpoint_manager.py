@@ -15,7 +15,9 @@
 import json
 import logging
 import os
+import tempfile
 import warnings
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from typing import Optional
 
@@ -30,7 +32,7 @@ from transformers.dynamic_module_utils import custom_object_save
 
 from verl.utils.device import is_cuda_available
 from verl.utils.fs import copy_to_local, is_non_local, local_mkdir_safe
-from verl.utils.fsdp_utils import fsdp_version, get_fsdp_full_state_dict, get_fsdp_state_ctx
+from verl.utils.fsdp_utils import collect_lora_params, fsdp_version, get_fsdp_full_state_dict, get_fsdp_state_ctx
 from verl.utils.logger import log_with_rank
 from verl.utils.transformers_compat import drop_tied_target_keys, get_auto_model_for_vision2seq
 
@@ -39,6 +41,9 @@ from .checkpoint_manager import BaseCheckpointManager
 # Setup logging
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
+
+LORA_ADAPTER_DIR = "lora_adapter"
+LORA_ADAPTER_WEIGHTS = "adapter_model.safetensors"
 
 
 @dataclass
@@ -99,6 +104,115 @@ class FSDPCheckpointManager(BaseCheckpointManager):
         )
         self.trust_remote_code = trust_remote_code
 
+    def _get_peft_model(self):
+        model = getattr(self.model, "_fsdp_wrapped_module", self.model)
+        return model if hasattr(model, "peft_config") else None
+
+    def _get_adapter_name(self) -> str:
+        peft_model = self._get_peft_model()
+        if peft_model is None:
+            return "default"
+        if "default" in peft_model.peft_config:
+            return "default"
+        return next(iter(peft_model.peft_config))
+
+    @staticmethod
+    def _lora_adapter_dir(local_path: str) -> str:
+        return os.path.join(local_path, LORA_ADAPTER_DIR)
+
+    @classmethod
+    def _has_lora_adapter(cls, local_path: str) -> bool:
+        return os.path.exists(os.path.join(cls._lora_adapter_dir(local_path), LORA_ADAPTER_WEIGHTS))
+
+    @staticmethod
+    def _insert_adapter_name(key: str, adapter_name: str) -> str:
+        for marker in ("lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B", "lora_magnitude_vector"):
+            token = f".{marker}."
+            if token not in key:
+                continue
+            prefix, suffix = key.split(token, 1)
+            if suffix.startswith(f"{adapter_name}."):
+                return key
+            return f"{prefix}.{marker}.{adapter_name}.{suffix}"
+        return key
+
+    def _summon_full_params(self, writeback: bool = False):
+        if fsdp_version(self.model) > 0:
+            return FSDP.summon_full_params(self.model, writeback=writeback)
+        return nullcontext()
+
+    def _save_lora_adapter(self, local_path: str):
+        peft_model = self._get_peft_model()
+        if peft_model is None:
+            raise RuntimeError("save_lora_only=True requires an actor model wrapped by PEFT/LoRA.")
+
+        lora_state_dict = collect_lora_params(self.model, layered_summon=True, base_sync_done=True)
+        if not lora_state_dict:
+            lora_state_dict = collect_lora_params(self.model, layered_summon=False, base_sync_done=True)
+
+        if self.rank == 0:
+            if not lora_state_dict:
+                raise RuntimeError("No LoRA tensors found while saving LoRA-only checkpoint.")
+
+            from safetensors.torch import save_file
+
+            adapter_name = self._get_adapter_name()
+            adapter_path = self._lora_adapter_dir(local_path)
+            local_mkdir_safe(adapter_path)
+
+            peft_config = peft_model.peft_config[adapter_name]
+            base_config = getattr(peft_model, "config", None)
+            base_model_name = getattr(base_config, "name_or_path", None) or getattr(base_config, "_name_or_path", None)
+            if base_model_name and not getattr(peft_config, "base_model_name_or_path", None):
+                peft_config.base_model_name_or_path = base_model_name
+            peft_config.save_pretrained(adapter_path)
+
+            state_dict = {
+                name: tensor.detach().cpu().contiguous() for name, tensor in lora_state_dict.items()
+            }
+            with tempfile.NamedTemporaryFile(dir=adapter_path, delete=False, suffix=".safetensors") as tmp_weights:
+                tmp_weights_name = tmp_weights.name
+            try:
+                save_file(state_dict, tmp_weights_name)
+                os.replace(tmp_weights_name, os.path.join(adapter_path, LORA_ADAPTER_WEIGHTS))
+            finally:
+                if os.path.exists(tmp_weights_name):
+                    os.remove(tmp_weights_name)
+
+            log_with_rank(
+                f"Saved LoRA adapter to {os.path.abspath(adapter_path)}",
+                rank=self.rank,
+                logger=logger,
+                log_only_rank_0=True,
+            )
+
+        torch.distributed.barrier()
+
+    def _load_lora_adapter(self, local_path: str):
+        peft_model = self._get_peft_model()
+        if peft_model is None:
+            raise RuntimeError(f"Found LoRA adapter checkpoint under {local_path}, but actor model is not PEFT/LoRA.")
+
+        from safetensors.torch import load_file
+
+        adapter_path = self._lora_adapter_dir(local_path)
+        weights_path = os.path.join(adapter_path, LORA_ADAPTER_WEIGHTS)
+        adapter_name = self._get_adapter_name()
+        adapter_state_dict = {
+            self._insert_adapter_name(name, adapter_name): tensor
+            for name, tensor in load_file(weights_path, device="cpu").items()
+        }
+
+        with self._summon_full_params(writeback=True):
+            load_result = peft_model.load_state_dict(adapter_state_dict, strict=False)
+
+        log_with_rank(
+            f"Loaded LoRA adapter from {weights_path}; missing={len(load_result.missing_keys)}, "
+            f"unexpected={len(load_result.unexpected_keys)}",
+            rank=self.rank,
+            logger=logger,
+        )
+
     def load_checkpoint(self, local_path: str, hdfs_path: str = None, del_local_after_load=False):
         """
         Load an FSDP checkpoint for this rank.
@@ -123,11 +237,16 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 "optimizer must be provided when checkpoint_contents.load includes ['optimizer']"
             )
 
+        load_lora_adapter = self.should_load_model and self._has_lora_adapter(local_path)
+        load_sharded_model = self.should_load_model and not load_lora_adapter
+
+        local_model_path = None
+        local_optim_path = None
+        local_extra_state_path = None
+
         # every rank download its own checkpoint
         state_dict_cfg = (
-            ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
-            if self.should_load_model
-            else None
+            ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False) if load_sharded_model else None
         )
         optim_cfg = (
             ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
@@ -135,7 +254,7 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             else None
         )
         with get_fsdp_state_ctx(self.model, StateDictType.SHARDED_STATE_DICT, state_dict_cfg, optim_cfg):
-            if self.should_load_model:
+            if load_sharded_model:
                 remote_model_path = os.path.join(local_path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
                 local_model_path = copy_to_local(remote_model_path)
                 model_state_dict = torch.load(local_model_path, weights_only=False)
@@ -148,6 +267,9 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 optimizer_state_dict = torch.load(local_optim_path, weights_only=False)
                 self.optimizer.load_state_dict(optimizer_state_dict)
                 log_with_rank(f"Loaded optimizer from {remote_optim_path}", rank=self.rank, logger=logger)
+
+        if load_lora_adapter:
+            self._load_lora_adapter(local_path)
 
         if self.should_load_extra:
             remote_extra_state_path = os.path.join(
@@ -168,9 +290,9 @@ class FSDPCheckpointManager(BaseCheckpointManager):
 
         if self.rank == 0 and del_local_after_load:
             try:
-                os.remove(local_model_path) if is_non_local(local_model_path) else None
-                os.remove(local_optim_path) if is_non_local(local_optim_path) else None
-                os.remove(local_extra_state_path) if is_non_local(local_extra_state_path) else None
+                for local_ckpt_path in (local_model_path, local_optim_path, local_extra_state_path):
+                    if local_ckpt_path is not None and is_non_local(local_ckpt_path):
+                        os.remove(local_ckpt_path)
             except Exception as e:
                 log_with_rank(
                     f"remove local resume ckpt file after loading failed, exception {e} will be ignored",
@@ -181,7 +303,14 @@ class FSDPCheckpointManager(BaseCheckpointManager):
         # wait for everyone to load checkpoints
         torch.distributed.barrier()
 
-    def save_checkpoint(self, local_path: str, hdfs_path: str = None, global_step: int = 0, max_ckpt_to_keep=None):
+    def save_checkpoint(
+        self,
+        local_path: str,
+        hdfs_path: str = None,
+        global_step: int = 0,
+        max_ckpt_to_keep=None,
+        save_lora_only: bool = False,
+    ):
         """
         Save an FSDP checkpoint for this rank.
 
@@ -219,8 +348,21 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 "optimizer must be provided when checkpoint_contents.save includes ['optimizer']"
             )
 
+        save_lora_adapter = self.should_save_model and save_lora_only and self._get_peft_model() is not None
+        if self.should_save_model and save_lora_only and not save_lora_adapter:
+            log_with_rank(
+                "save_lora_only=True was requested, but the actor is not PEFT/LoRA; saving full model shards.",
+                rank=self.rank,
+                logger=logger,
+                log_only_rank_0=True,
+            )
+
+        save_sharded_model = self.should_save_model and not save_lora_adapter
+
         # every rank will save its own model and optim shard
-        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
+        state_dict_cfg = (
+            ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False) if save_sharded_model else None
+        )
         optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -229,7 +371,7 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 optim_path = os.path.join(local_path, f"optim_world_size_{self.world_size}_rank_{self.rank}.pt")
                 extra_path = os.path.join(local_path, f"extra_state_world_size_{self.world_size}_rank_{self.rank}.pt")
 
-                if self.should_save_model:
+                if save_sharded_model:
                     model_state_dict = self.model.state_dict()
                     torch.save(model_state_dict, model_path)
                     log_with_rank(f"Saved model to {os.path.abspath(model_path)}", rank=self.rank, logger=logger)
@@ -247,6 +389,9 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                     }
                     torch.save(extra_state_dict, extra_path)
                     log_with_rank(f"Saved extra_state to {os.path.abspath(extra_path)}", rank=self.rank, logger=logger)
+
+        if save_lora_adapter:
+            self._save_lora_adapter(local_path)
 
         if self.rank == 0:
             # Save HF tokenizer/processor and model config on rank 0 to huggingface/ directory, no matter whether

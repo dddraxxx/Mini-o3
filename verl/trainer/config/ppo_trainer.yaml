@@ -148,6 +148,10 @@ trainer:
   # Save frequency (by iteration) for model checkpoints
   save_freq: -1
 
+  # Save PEFT LoRA adapter weights instead of full model shards when actor training uses LoRA.
+  # Optimizer, scheduler/RNG extra state, and dataloader state are still saved for resume.
+  save_lora_only: False
+
   # ESI refers to the elastic server instance used during training, similar to the training plan. For example,
   # if you purchase 10 hours of computing power, the ESI will automatically shut down after 10 hours of training.
   # To ensure a checkpoint is saved before ESI shuts down, the system will start saving a checkpoint in advance.

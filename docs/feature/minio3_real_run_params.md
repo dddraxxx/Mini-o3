@@ -50,8 +50,13 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | `ROLLOUT_FREE_CACHE_ENGINE` | `True` | `True` |
 | `MAX_NUM_BATCHED_TOKENS` | `32768` | `32768` |
 | `MAX_NUM_SEQS` | `32` | `256` |
+| `SAVE_FREQ` | `10` | `10` |
+| `SAVE_LORA_ONLY` | `True` | `True` |
 | actor/ref offload | enabled | enabled |
 | LoRA | rank `8`, alpha `16`, text-layer q/k/v/o/mlp regex | same |
+
+LoRA runs save `actor/lora_adapter/adapter_model.safetensors` plus optimizer and extra state by default. Set
+`SAVE_LORA_ONLY=False` only when a full sharded model checkpoint is needed.
 
 ## Val
 

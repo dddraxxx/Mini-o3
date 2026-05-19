@@ -423,8 +423,12 @@ class TrainingWorker(Worker, DistProfilerExtension):
         return final_output
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
-        return self.engine.save_checkpoint(local_path, hdfs_path, global_step, max_ckpt_to_keep)
+    def save_checkpoint(
+        self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None, save_lora_only=False
+    ):
+        return self.engine.save_checkpoint(
+            local_path, hdfs_path, global_step, max_ckpt_to_keep, save_lora_only=save_lora_only
+        )
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def load_checkpoint(self, local_path, hdfs_path=None, del_local_after_load=False):
@@ -651,9 +655,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         self.actor.load_checkpoint(local_path, hdfs_path, del_local_after_load)
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
+    def save_checkpoint(
+        self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None, save_lora_only=False
+    ):
         assert "actor" in self.role, "save_checkpoint only support actor role"
-        self.actor.save_checkpoint(local_path, hdfs_path, global_step, max_ckpt_to_keep)
+        self.actor.save_checkpoint(local_path, hdfs_path, global_step, max_ckpt_to_keep, save_lora_only=save_lora_only)
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
     async def update_weights(self, global_steps: int = None, mode: str = "auto"):
