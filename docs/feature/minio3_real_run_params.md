@@ -89,14 +89,16 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | prompt admission | enabled, std epsilon `1.0e-4`, state JSONL under `RUN_DIR` | same |
 | `SAVE_FREQ` | `10` | `10` |
 | `SAVE_LORA_ONLY` | `True` | `True` |
-| logging | `train_step_metrics.jsonl`, `rollout_generations/`, `validation_generations/`, `train_samples.jsonl`, `gpu_util.jsonl` | same |
+| logging | `train_step_metrics.jsonl`, `rollout_generations/`, `validation_generations/`, `train_samples.jsonl`, `gpu_util.jsonl`, `perf_debug_summary.json` | same |
 | actor/ref offload | enabled | enabled |
 | LoRA | rank `8`, alpha `16`, text-layer q/k/v/o/mlp regex | same |
 
 LoRA runs save `actor/lora_adapter/adapter_model.safetensors` plus optimizer and extra state by default. Set
 `SAVE_LORA_ONLY=False` only when a full sharded model checkpoint is needed.
 
-GPU util 采样默认写入 `gpu_util.jsonl`，汇总方式见
+GPU util 原始采样默认写入 `gpu_util.jsonl`；调速辅助汇总默认写入
+`perf_debug_summary.json`。这两个文件只用于 throughput/debug，不作为模型质量训练结果。
+汇总方式见
 [minio3_gpu_monitoring.md](minio3_gpu_monitoring.md)。
 
 2026-05-19 A100 单步对比结论：在 `TRAIN_BATCH_SIZE=64`、`ROLLOUT_N=8`、

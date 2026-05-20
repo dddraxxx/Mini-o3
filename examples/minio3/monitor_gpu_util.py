@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Log GPU utilization as JSONL.
 
-This is intended for long Mini-o3 training runs where one-off nvidia-smi
-snapshots are too noisy. The output is one JSON object per sampling tick with a
-list of per-GPU records.
+This is intended for long Mini-o3 training runs where one-off GPU snapshots are
+too noisy. The output is one JSON object per sampling tick with a list of
+per-GPU records.
 """
 
 from __future__ import annotations
@@ -186,8 +186,8 @@ def main() -> int:
     parser.add_argument(
         "--backend",
         choices=("nvidia-smi", "nvml"),
-        default="nvidia-smi",
-        help="Sampling backend. nvidia-smi is default because it can be bounded by a subprocess timeout.",
+        default="nvml",
+        help="Sampling backend. NVML is the default; use nvidia-smi as a subprocess fallback if needed.",
     )
     parser.add_argument("--sample-timeout", type=float, default=5.0, help="Per nvidia-smi query timeout.")
     args = parser.parse_args()

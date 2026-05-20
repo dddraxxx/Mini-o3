@@ -98,9 +98,11 @@ PROMPT_ADMISSION_CANCEL_UNFINISHED=${PROMPT_ADMISSION_CANCEL_UNFINISHED:-True}
 PROMPT_ADMISSION_STATE_PATH=${PROMPT_ADMISSION_STATE_PATH:-}
 GPU_MONITOR_ENABLE=${GPU_MONITOR_ENABLE:-True}
 GPU_MONITOR_INTERVAL=${GPU_MONITOR_INTERVAL:-1.0}
-GPU_MONITOR_BACKEND=${GPU_MONITOR_BACKEND:-nvidia-smi}
+GPU_MONITOR_BACKEND=${GPU_MONITOR_BACKEND:-nvml}
 GPU_MONITOR_SAMPLE_TIMEOUT=${GPU_MONITOR_SAMPLE_TIMEOUT:-5.0}
 GPU_MONITOR_PATH=${GPU_MONITOR_PATH:-}
+PERF_DEBUG_SUMMARY_ENABLE=${PERF_DEBUG_SUMMARY_ENABLE:-True}
+PERF_DEBUG_SUMMARY_PATH=${PERF_DEBUG_SUMMARY_PATH:-}
 
 PROJECT_NAME=${PROJECT_NAME:-minio3_official_verl}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-qwen3_vl_8b_crop_lora_$(date +%Y%m%d_%H%M)}
@@ -319,6 +321,7 @@ if [[ -n "${RUN_DIR}" && ( "${GPU_MONITOR_ENABLE}" == "True" || "${GPU_MONITOR_E
     GPU_MONITOR_PID=$!
 fi
 
+TRAIN_EXIT_CODE=0
 "${PYTHON_CMD[@]}" -m verl.trainer.main_ppo \
     +algorithm.max_num_gen_batches=${MAX_NUM_GEN_BATCHES:-256} \
     "${DATA[@]}" \
@@ -328,4 +331,16 @@ fi
     "${REF[@]}" \
     "${REWARD[@]}" \
     "${TRAINER[@]}" \
-    "$@"
+    "$@" || TRAIN_EXIT_CODE=$?
+
+stop_gpu_monitor
+GPU_MONITOR_PID=
+
+if [[ -n "${RUN_DIR}" && ( "${PERF_DEBUG_SUMMARY_ENABLE}" == "True" || "${PERF_DEBUG_SUMMARY_ENABLE}" == "true" || "${PERF_DEBUG_SUMMARY_ENABLE}" == "1" ) ]]; then
+    PERF_DEBUG_SUMMARY_PATH=${PERF_DEBUG_SUMMARY_PATH:-$RUN_DIR/perf_debug_summary.json}
+    "${PYTHON_CMD[@]}" "$PROJECT_DIR/examples/minio3/summarize_run_metrics.py" \
+        "$RUN_DIR" \
+        --output "$PERF_DEBUG_SUMMARY_PATH" || true
+fi
+
+exit "$TRAIN_EXIT_CODE"

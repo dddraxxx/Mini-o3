@@ -169,7 +169,7 @@ GPU_MONITOR_PATH="$RUN_DIR/gpu_util.jsonl"
 | `$RUN_DIR/rollout_generations/{step}.jsonl` | official verl rollout dump，已补 `uid`、`data_source`、`image_paths`。 |
 | `$RUN_DIR/validation_generations/{step}.jsonl` | official verl validation dump。 |
 | `$RUN_DIR/train_samples.jsonl` | 旧 Mini-o3 兼容 train sample append log，每 step 默认最多 16 条。 |
-| `$RUN_DIR/gpu_util.jsonl` | GPU util / memory 持续采样 JSONL。默认用 `nvidia-smi --query-*` 后端并加 per-sample timeout；不是单次 snapshot。 |
+| `$RUN_DIR/gpu_util.jsonl` | GPU util / memory 持续采样 JSONL。默认用 Python NVML 后端；`nvidia-smi --query-*` 只作为 fallback，不是单次 snapshot。 |
 
 汇总脚本：
 

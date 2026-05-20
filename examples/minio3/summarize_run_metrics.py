@@ -337,10 +337,14 @@ def main() -> int:
         help="Only GPU samples above this memory are considered active training samples.",
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of text.")
+    parser.add_argument("--output", type=Path, help="Write the JSON summary to this path.")
     args = parser.parse_args()
 
     summaries = [summarize_run(path, args.active_memory_mib) for path in args.run_dirs]
-    if args.json:
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(summaries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif args.json:
         print(json.dumps(summaries, indent=2, sort_keys=True))
     else:
         _print_text(summaries)
