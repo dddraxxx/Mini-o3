@@ -154,12 +154,6 @@ fails before Ray starts.
   `score=0.0`.
 - `AGENT_NUM_WORKERS=4` padded the 1-case validation batch to 4 internal
   trajectories; only one unpadded row was dumped.
-- The wrapper exited 127 after successful validation because the launcher
-  attempted to execute the already-built Hydra argument list a second time,
-  starting at `+algorithm.max_num_gen_batches=256`. The val path itself had
-  already completed. The wrapper now keeps `PYTHON_CMD` as an exported scalar
-  for the inner launcher and uses a separate local `PYTHON_CMD_ARR` only for
-  commands executed by the outer smoke script.
 
 ## Formal H200 Val Batch
 
