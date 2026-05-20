@@ -19,6 +19,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 import regex
+import yaml
 from pydantic import BaseModel
 
 from verl.tools.schemas import OpenAIFunctionToolSchema
@@ -104,8 +105,11 @@ class MiniO3GroundingToolParser(ToolParser):
                 try:
                     arguments = ast.literal_eval(match)
                 except Exception as exc:
-                    logger.error(f"Failed to decode Mini-o3 grounding call: {exc}")
-                    continue
+                    try:
+                        arguments = yaml.safe_load(match)
+                    except Exception:
+                        logger.error(f"Failed to decode Mini-o3 grounding call: {exc}")
+                        continue
 
             if not isinstance(arguments, dict):
                 logger.error(f"Mini-o3 grounding call must be a JSON object, got {type(arguments).__name__}")

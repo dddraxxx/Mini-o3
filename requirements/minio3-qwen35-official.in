@@ -21,6 +21,7 @@
 vllm==0.18.0
 torch==2.10.0
 transformers @ git+https://github.com/huggingface/transformers.git@cc7ab9be508ce6ed3637bba9e50367b29b742dc6
+accelerate>=1.13.0
 
 flashinfer-python==0.6.6
 flashinfer-jit-cache==0.6.6+cu129

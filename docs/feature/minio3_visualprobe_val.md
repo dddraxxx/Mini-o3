@@ -32,8 +32,9 @@ data/minio3_visualprobe_val_smoke10/val.parquet
 save/visualprobe_val_smoke10_qwen35_9b_temp*/validation_generations/
 ```
 
-The train parquet contains one row because verl still expects train files to be
-configured; val-only uses the val parquet.
+The train parquet contains `SMOKE_TRAIN_CASES` rows, defaulting to
+`TRAIN_BATCH_SIZE`. Even in val-only mode, verl builds the train dataloader and
+expects it to have enough rows for the configured train batch.
 
 ## Current Smoke Candidate
 
@@ -46,6 +47,9 @@ script settings so the smoke can expose batching/GPU-util problems early.
 | `MODEL_PATH` | `Qwen/Qwen3.5-9B` |
 | `CHECK_QWEN35_ENV` | `True` |
 | `SMOKE_CASES` | `10` |
+| `SMOKE_TRAIN_CASES` | `TRAIN_BATCH_SIZE` |
+| `TRAIN_BATCH_SIZE` | `8` |
+| `PPO_MINI_BATCH_SIZE` | `TRAIN_BATCH_SIZE` |
 | `VAL_BATCH_SIZE` | `10` |
 | `MAX_PROMPT_LENGTH` | `16384` |
 | `VAL_RESPONSE_LENGTH` | `32768` |
@@ -61,9 +65,10 @@ script settings so the smoke can expose batching/GPU-util problems early.
 | `VAL_MAX_USER_TURNS` | `12` |
 | `VAL_N` | `1` |
 | `LORA_RANK` | `0` |
+| `SKIP_INITIAL_UPDATE_WEIGHTS` | `True` |
 | `LOG_VAL_GENERATIONS` | `10` |
 | `RAY_INCLUDE_DASHBOARD` | `False` |
-| `RAY_NUM_CPUS` | `8` |
+| `RAY_NUM_CPUS` | `96` |
 
 Greedy run:
 
@@ -99,6 +104,9 @@ bash examples/minio3/run_real_val_visualprobe_smoke.sh
   candidates, not settled formal defaults:
   `ROLLOUT_DP=8`, `AGENT_NUM_WORKERS=64`,
   `MAX_NUM_BATCHED_TOKENS=65536`, `MAX_NUM_SEQS=256`.
+- `RAY_NUM_CPUS=96` is needed on the local H200 node. The 8 rollout/FSDP
+  placement-group bundles reserve at least 24 CPUs, and the 64 AgentLoop
+  workers need extra scheduler room.
 - If the smoke fails before generation, first check image-token prompt length,
   model processor/chat template compatibility, and vLLM max model length.
 - If the smoke runs but GPU util is low, check per-turn tool/image
@@ -107,6 +115,14 @@ bash examples/minio3/run_real_val_visualprobe_smoke.sh
   `actor_rollout_ref.rollout.agent.num_workers` before async rollout and unpads
   after generation. A 1-case smoke with `AGENT_NUM_WORKERS=4` therefore starts 4
   agent-loop trajectories, but writes one unpadded validation JSONL row.
+- For val-only base-model evaluation with `LORA_RANK=0`, the smoke sets
+  `trainer.skip_initial_update_weights=True`. This skips the initial FSDP to
+  vLLM weight broadcast and also avoids sleeping the freshly loaded vLLM
+  replicas. The trainer guards this flag so it is only valid for
+  `trainer.val_only=True`, `lora_rank=0`, and `global_steps=0`.
+- The cooperative GPU keeper can block Ray placement when it grabs GPU slots
+  while Ray is launching all rollout actors. Stop it for formal val/training
+  launches if Ray shows pending GPU placement groups.
 
 ## Smoke Results
 
@@ -154,6 +170,35 @@ fails before Ray starts.
   `score=0.0`.
 - `AGENT_NUM_WORKERS=4` padded the 1-case validation batch to 4 internal
   trajectories; only one unpadded row was dumped.
+
+2026-05-20 30-case DeepSeek temp-1 smoke:
+
+- Run id:
+  `visualprobe_val_smoke30_qwen35_9b_temp1_deepseek_skipinit_cpu96_20260520_023500`.
+- Log:
+  `logs/minio3_vp30_deepseek_t1_skipinit_cpu96_0520.log`.
+- Run dir:
+  `save/visualprobe_val_smoke30_qwen35_9b_temp1_deepseek_skipinit_cpu96_20260520_023500`.
+- Overrides: `SMOKE_CASES=30`, `SMOKE_TRAIN_CASES=8`,
+  `VAL_BATCH_SIZE=30`, `VAL_N=1`, `VAL_DO_SAMPLE=True`,
+  `VAL_TEMPERATURE=1.0`, `LOG_VAL_GENERATIONS=30`,
+  `RAY_NUM_CPUS=96`, DeepSeek self-judge reward enabled.
+- Confirmed progress: official Qwen3.5 env preflight passes with
+  `accelerate==1.13.0`; FSDP actor load succeeds; vLLM DP=8 starts; CUDA graph
+  capture completes; `trainer.skip_initial_update_weights=True` reaches
+  `test_gen_batch`; 30 AgentLoop trajectories begin generation.
+- Final status: wrapper exits 0, writes
+  `validation_generations/0.jsonl`, `train_step_metrics.jsonl`, and
+  `perf_debug_summary.json`. The vLLM EngineCore shutdown message appears after
+  metrics are written and did not make the wrapper fail.
+- Split coverage: 10 Easy, 10 Medium, 10 Hard.
+- DeepSeek reward score mean: overall 0.30; Easy 0.60; Medium 0.10; Hard 0.20.
+- Mean tool calls: overall 0.90; Easy 0.90; Medium 0.40; Hard 1.40.
+- Mean turns: 2.87; min 2; max 16.
+- One generation emitted a Mini-o3 grounding call with a bare identifier that
+  the old JSON/Python-literal parser could not decode. The parser now falls
+  back to `yaml.safe_load` for this common `{bbox_2d: [...], source:
+  original_image}` format.
 
 ## Formal H200 Val Batch
 
@@ -212,6 +257,7 @@ would silently downgrade the official transformers commit back to a 4.x release.
 | `torch` | `2.10.0+cu128` |
 | `vllm` | `0.18.0` |
 | `transformers` | `5.3.0.dev0` from `cc7ab9be508ce6ed3637bba9e50367b29b742dc6` |
+| `accelerate` | `1.13.0` |
 | `flashinfer-python` | `0.6.6` |
 | `flashinfer-jit-cache` | `0.6.6+cu129` |
 | `flash-attn` | `2.8.3`, rebuilt after the torch upgrade |

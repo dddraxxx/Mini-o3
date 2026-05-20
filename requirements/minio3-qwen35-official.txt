@@ -2,9 +2,9 @@
 #    uv pip compile requirements/minio3-qwen35-official.in --constraints /tmp/minio3-qwen35-current-freeze.txt --overrides requirements/minio3-qwen35-official-overrides.txt --python .venv/bin/python --torch-backend cu128 --index-strategy unsafe-best-match --no-emit-package verl --output-file requirements/minio3-qwen35-official.txt
 absl-py==2.4.0
     # via tensorboard
-accelerate==1.9.0
+accelerate==1.13.0
     # via
-    #   -c /tmp/minio3-qwen35-current-freeze.txt
+    #   -r requirements/minio3-qwen35-official.in
     #   peft
     #   verl
 aiohappyeyeballs==2.6.1

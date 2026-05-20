@@ -35,6 +35,8 @@ uv_install "flashinfer-jit-cache==0.6.6+cu129"
 uv pip install --python "$PYTHON" --no-deps \
   "transformers @ git+https://github.com/huggingface/transformers.git@$TRANSFORMERS_REF"
 
+uv_install "accelerate>=1.13.0"
+
 uv_install \
   "huggingface-hub>=1.3.0,<2.0" \
   "typer>=0.25.1"

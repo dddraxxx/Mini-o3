@@ -27,6 +27,11 @@ Do not remove the `--overrides` file from compile or install commands until
 vLLM publishes metadata that allows the official transformers 5.x Qwen3.5
 commit.
 
+After installing the transformers git commit, the installer reapplies the
+lock-pinned `accelerate>=1.13.0` package through the same lock/overrides
+profile. Keep the transformers and accelerate pins together when updating this
+Qwen3.5 environment.
+
 The checked-in lock omits local `+cu128` tags from `torch`, `torchaudio`, and
 `torchvision` so it matches the package metadata in the existing `.venv`.
 Installation still selects CUDA 12.8 wheels through `--torch-backend cu128`.

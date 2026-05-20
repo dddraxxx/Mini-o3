@@ -1379,8 +1379,16 @@ class RayPPOTrainer:
             replicas=self.llm_server_manager.get_replicas(),
         )
 
-        # sleep all replicas to load checkpoint
-        self.checkpoint_manager.sleep_replicas()
+        if self.config.trainer.get("skip_initial_update_weights", False):
+            if not self.config.trainer.get("val_only", False):
+                raise ValueError("trainer.skip_initial_update_weights is only valid with trainer.val_only=True")
+            lora_rank = int(self.config.actor_rollout_ref.model.get("lora_rank", 0) or 0)
+            if lora_rank != 0:
+                raise ValueError("trainer.skip_initial_update_weights requires actor_rollout_ref.model.lora_rank=0")
+            print("Skipping initial rollout sleep for val-only base-model evaluation.")
+        else:
+            # sleep all replicas to load checkpoint
+            self.checkpoint_manager.sleep_replicas()
 
     def _save_checkpoint(self):
         from verl.utils.fs import local_mkdir_safe
@@ -1799,7 +1807,12 @@ class RayPPOTrainer:
 
         # load checkpoint and update weights before doing anything
         self._load_checkpoint()
-        self.checkpoint_manager.update_weights(self.global_steps)
+        if self.config.trainer.get("skip_initial_update_weights", False):
+            if self.global_steps != 0:
+                raise ValueError("trainer.skip_initial_update_weights requires starting from global_steps=0")
+            print("Skipping initial update_weights for val-only base-model evaluation.")
+        else:
+            self.checkpoint_manager.update_weights(self.global_steps)
 
         current_epoch = self.global_steps // len(self.train_dataloader)
 

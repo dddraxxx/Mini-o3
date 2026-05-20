@@ -52,6 +52,7 @@ if [[ -z "${LORA_TARGET_MODULES:-}" ]]; then
     esac
 fi
 MODEL_ATTN_IMPLEMENTATION=${MODEL_ATTN_IMPLEMENTATION:-flash_attention_2}
+FSDP_MODEL_DTYPE=${FSDP_MODEL_DTYPE:-bfloat16}
 
 ROLLOUT_TP=${ROLLOUT_TP:-1}
 ROLLOUT_DP=${ROLLOUT_DP:-1}
@@ -163,6 +164,7 @@ ACTOR=(
     actor_rollout_ref.actor.clip_ratio_low=${CLIP_RATIO_LOW}
     actor_rollout_ref.actor.ignore_exceed=${MINIO3_IGNORE_EXCEED}
     actor_rollout_ref.actor.ignore_void=${MINIO3_IGNORE_VOID}
+    actor_rollout_ref.actor.fsdp_config.model_dtype=${FSDP_MODEL_DTYPE}
     actor_rollout_ref.actor.fsdp_config.param_offload=${ACTOR_PARAM_OFFLOAD}
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=${ACTOR_OPTIMIZER_OFFLOAD}
 )
@@ -224,6 +226,7 @@ if [[ "$ROLLOUT_SKIP_VLLM_DUMMY_LORA" == "True" || "$ROLLOUT_SKIP_VLLM_DUMMY_LOR
 fi
 
 REF=(
+    actor_rollout_ref.ref.fsdp_config.model_dtype=${FSDP_MODEL_DTYPE}
     actor_rollout_ref.ref.fsdp_config.param_offload=${REF_PARAM_OFFLOAD}
 )
 
