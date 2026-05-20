@@ -1,0 +1,4 @@
+# vLLM 0.18.0 metadata still says transformers>=4.56.0,<5, but the official
+# verl Qwen3.5 path requires this transformers 5.x commit. Use this file with
+# uv's --overrides flag whenever compiling or installing the Qwen3.5 profile.
+transformers @ git+https://github.com/huggingface/transformers.git@cc7ab9be508ce6ed3637bba9e50367b29b742dc6

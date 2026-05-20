@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Mini-o3 VisualProbe 10-case val-only smoke for official verl.
+# Mini-o3 VisualProbe val-only smoke for official verl.
 
 set -xeuo pipefail
 
 PROJECT_DIR=${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
-read -r -a PYTHON_CMD <<< "${PYTHON_CMD:-uv run --active --no-sync python}"
+PYTHON_CMD_DEFAULT="uv run --project $PROJECT_DIR --no-sync python"
+export PYTHON_CMD="${PYTHON_CMD:-$PYTHON_CMD_DEFAULT}"
+read -r -a PYTHON_CMD_ARR <<< "$PYTHON_CMD"
 
 export HF_HOME=${HF_HOME:-/mnt/localssd/.cache/huggingface}
 export WANDB_MODE=${WANDB_MODE:-disabled}
@@ -15,24 +17,30 @@ export MINIO3_STAGE_LOG=${MINIO3_STAGE_LOG:-1}
 export MINIO3_TRAJ_STATUS_INTERVAL_S=${MINIO3_TRAJ_STATUS_INTERVAL_S:-15}
 
 SMOKE_CASES=${SMOKE_CASES:-10}
+NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-$NGPUS_PER_NODE}
+PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-$TRAIN_BATCH_SIZE}
+SMOKE_TRAIN_CASES=${SMOKE_TRAIN_CASES:-$TRAIN_BATCH_SIZE}
 DATA_DIR=${DATA_DIR:-$PROJECT_DIR/data/minio3_visualprobe_val_smoke${SMOKE_CASES}}
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3.5-9B}
 RUN_ID=${RUN_ID:-visualprobe_val_smoke${SMOKE_CASES}_qwen35_9b_temp${VAL_TEMPERATURE:-0}_$(date +%Y%m%d_%H%M%S)}
 RUN_DIR=${RUN_DIR:-$PROJECT_DIR/save/$RUN_ID}
+SKIP_INITIAL_UPDATE_WEIGHTS=${SKIP_INITIAL_UPDATE_WEIGHTS:-True}
 
 if [[ "${CHECK_QWEN35_ENV:-True}" == "True" && "$MODEL_PATH" == *"Qwen3.5"* ]]; then
   QWEN35_ENV_ARGS=(--model-path "$MODEL_PATH")
   if [[ "${QWEN35_LOCAL_FILES_ONLY:-True}" == "True" ]]; then
     QWEN35_ENV_ARGS+=(--local-files-only)
   fi
-  "${PYTHON_CMD[@]}" "$PROJECT_DIR/examples/minio3/check_qwen35_env.py" "${QWEN35_ENV_ARGS[@]}"
+  "${PYTHON_CMD_ARR[@]}" "$PROJECT_DIR/examples/minio3/check_qwen35_env.py" "${QWEN35_ENV_ARGS[@]}"
 fi
 
-"${PYTHON_CMD[@]}" "$PROJECT_DIR/examples/minio3/prepare_visualprobe_val_smoke.py" \
+"${PYTHON_CMD_ARR[@]}" "$PROJECT_DIR/examples/minio3/prepare_visualprobe_val_smoke.py" \
   --dataset-root "${VISUALPROBE_DATASET_ROOT:-$PROJECT_DIR/data}" \
   --image-root "${VISUALPROBE_IMAGE_ROOT:-$PROJECT_DIR/data}" \
   --local-save-dir "$DATA_DIR" \
   --case-count "$SMOKE_CASES" \
+  --train-case-count "$SMOKE_TRAIN_CASES" \
   --min-pixels "${MIN_PIXELS:-40000}" \
   --max-pixels "${MAX_PIXELS:-2000000}"
 
@@ -45,9 +53,9 @@ LOGGER_BACKENDS=${LOGGER_BACKENDS:-'["console","file"]'} \
 VERL_FILE_LOGGER_PATH=${VERL_FILE_LOGGER_PATH:-$RUN_DIR/train_step_metrics.jsonl} \
 VALIDATION_DATA_DIR=${VALIDATION_DATA_DIR:-$RUN_DIR/validation_generations} \
 REWARD_FN_PATH=${REWARD_FN_PATH:-$PROJECT_DIR/examples/minio3/empty_reward.py} \
-TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-1} \
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE} \
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-10} \
-PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-1} \
+PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE} \
 PPO_MICRO_BATCH_SIZE_PER_GPU=${PPO_MICRO_BATCH_SIZE_PER_GPU:-1} \
 DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS:-0} \
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-16384} \
@@ -73,6 +81,7 @@ VAL_DO_SAMPLE=${VAL_DO_SAMPLE:-False} \
 VAL_TEMPERATURE=${VAL_TEMPERATURE:-0} \
 VAL_TOP_P=${VAL_TOP_P:-1.0} \
 VAL_TOP_K=${VAL_TOP_K:--1} \
+SKIP_INITIAL_UPDATE_WEIGHTS=${SKIP_INITIAL_UPDATE_WEIGHTS:-True} \
 USE_DYNAMIC_BSZ=${USE_DYNAMIC_BSZ:-False} \
 ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-True} \
 ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-True} \
@@ -86,13 +95,16 @@ TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-1} \
 LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-10} \
 VAL_BEFORE_TRAIN=True \
 VAL_ONLY=True \
-NGPUS_PER_NODE=${NGPUS_PER_NODE:-8} \
+NGPUS_PER_NODE=${NGPUS_PER_NODE} \
 PROJECT_NAME=${PROJECT_NAME:-Mini-o3-val} \
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-$RUN_ID} \
 bash "$PROJECT_DIR/examples/minio3/run_qwen3_vl_8b_crop_lora_fsdp.sh" \
   actor_rollout_ref.model.trust_remote_code=True \
   trainer.val_before_train=True \
   trainer.val_only=True \
+  ++trainer.skip_initial_update_weights="${SKIP_INITIAL_UPDATE_WEIGHTS}" \
   trainer.validation_data_dir="$RUN_DIR/validation_generations" \
   trainer.default_local_dir="$RUN_DIR" \
+  ++ray_kwargs.ray_init.include_dashboard="${RAY_INCLUDE_DASHBOARD:-False}" \
+  ++ray_kwargs.ray_init.num_cpus="${RAY_NUM_CPUS:-96}" \
   "$@"

@@ -76,6 +76,7 @@ def main() -> None:
     parser.add_argument("--image-root", default=None)
     parser.add_argument("--local-save-dir", default="data/minio3_visualprobe_val_smoke10")
     parser.add_argument("--case-count", type=int, default=10)
+    parser.add_argument("--train-case-count", type=int, default=1)
     parser.add_argument("--min-pixels", type=int, default=40000)
     parser.add_argument("--max-pixels", type=int, default=2000000)
     args = parser.parse_args()
@@ -83,10 +84,14 @@ def main() -> None:
     dataset_root = Path(args.dataset_root)
     image_root = args.image_root or os.fspath(dataset_root)
     out_dir = Path(args.local_save_dir)
-    val_rows = _select_stratified(dataset_root, args.case_count)
+    if args.train_case_count < 1:
+        raise ValueError("--train-case-count must be >= 1")
+    selected_rows = _select_stratified(dataset_root, max(args.case_count, args.train_case_count))
+    val_rows = selected_rows[: args.case_count]
+    train_rows = selected_rows[: args.train_case_count]
 
     _write_parquet(
-        val_rows[:1],
+        train_rows,
         out_dir / "train.parquet",
         "train",
         image_root,

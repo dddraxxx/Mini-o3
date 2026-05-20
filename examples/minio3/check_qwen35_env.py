@@ -11,6 +11,20 @@ import torch
 import transformers
 from transformers import AutoConfig
 import vllm
+import accelerate
+
+
+MIN_ACCELERATE = (1, 13, 0)
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    core = version.split("+", 1)[0].split(".dev", 1)[0]
+    parts = []
+    for item in core.split("."):
+        if not item.isdigit():
+            break
+        parts.append(int(item))
+    return tuple(parts)
 
 
 REQUIRED_MODULES = (
@@ -30,6 +44,7 @@ def main() -> int:
         f"model={args.model_path} "
         f"transformers={transformers.__version__} "
         f"vllm={vllm.__version__} "
+        f"accelerate={accelerate.__version__} "
         f"torch={torch.__version__}"
     )
 
@@ -41,6 +56,11 @@ def main() -> int:
     errors = []
     if missing:
         errors.extend(missing)
+    if _version_tuple(accelerate.__version__) < MIN_ACCELERATE:
+        errors.append(
+            f"accelerate=={accelerate.__version__}, expected >= "
+            f"{'.'.join(str(x) for x in MIN_ACCELERATE)}"
+        )
 
     try:
         config = AutoConfig.from_pretrained(
