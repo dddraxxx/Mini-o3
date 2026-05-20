@@ -83,7 +83,7 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | `ROLLOUT_SKIP_VLLM_DUMMY_LORA` | `True` | `False` |
 | `ROLLOUT_GPU_MEM_UTIL` | `0.9` | `0.9` |
 | `ROLLOUT_FREE_CACHE_ENGINE` | `True` | `True` |
-| `MAX_NUM_BATCHED_TOKENS` | `32768` | `32768` |
+| `MAX_NUM_BATCHED_TOKENS` | `49152` | `32768` |
 | `MAX_NUM_SEQS` | `256` | `256` |
 | Mini-o3 loss mask | `MINIO3_IGNORE_EXCEED=True`, `MINIO3_IGNORE_VOID=False` | same |
 | prompt admission | enabled, std epsilon `1.0e-4`, state JSONL under `RUN_DIR` | same |
@@ -100,12 +100,27 @@ GPU util 采样默认写入 `gpu_util.jsonl`，汇总方式见
 [minio3_gpu_monitoring.md](minio3_gpu_monitoring.md)。
 
 2026-05-19 A100 单步对比结论：在 `TRAIN_BATCH_SIZE=64`、`ROLLOUT_N=8`、
-`MAX_NUM_BATCHED_TOKENS=32768`、禁 validation/checkpoint、强制 admission accept 的设置下，
-`MAX_NUM_SEQS=256` 比 `512` 更快更稳。256 run 的 `timing_s/gen=462.18s`、
-`timing_s/step=733.37s`、`perf/throughput=357.37 tok/s/GPU`；512 run 的
-`timing_s/gen=469.01s`、`timing_s/step=751.20s`、`perf/throughput=344.22 tok/s/GPU`。
-因此 A100 profile 当前默认固定为 `MAX_NUM_SEQS=256`；后续如果继续优化，优先测试
-`MAX_NUM_BATCHED_TOKENS=49152/65536`，不要先把 `MAX_NUM_SEQS` 继续上调。
+禁 validation/checkpoint、强制 admission accept 的设置下，`MAX_NUM_SEQS=256`
+比 `512` 更快更稳；在 `MAX_NUM_SEQS=256` 基础上，`MAX_NUM_BATCHED_TOKENS=49152`
+比 `32768` 略快且可以稳定完成一整个 update。因此 A100 profile 当前默认固定为：
+
+```bash
+MAX_NUM_SEQS=256
+MAX_NUM_BATCHED_TOKENS=49152
+```
+
+对比数据：
+
+| run | result | `timing_s/gen` | `timing_s/step` | `perf/throughput` | active GPU util | load-balance note |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| `mns256_bs64_noval_20260519_152052` (`32768/256`) | pass | `462.18s` | `733.37s` | `357.37 tok/s/GPU` | mean `43.25`, p50 `32`, p95 `99` | no parsed stage-log timeline |
+| `mns512_bs64_noval_20260519_154446` (`32768/512`) | pass | `469.01s` | `751.20s` | `344.22 tok/s/GPU` | mean `41.01`, p50 `29`, p95 `99` | no parsed stage-log timeline |
+| `mbt49152_mns256_bs64_20260519_165749` (`49152/256`) | pass | `439.48s` | `713.44s` | `362.38 tok/s/GPU` | mean `41.90`, p50 `29`, p95 `99` | `prompt_load/running_groups` mean `46.62`, p50 `49`, p95 `64`, max `64`; `max_worker_inflight` mean `1.90`, max `2`; `nonzero_workers` mean `27.28`, p95 `32`; `traj_active_ratio` mean `0.63`, p95 `1.00` |
+| `mbt65536_mns256_bs64_20260519_164656` (`65536/256`) | fail | n/a | n/a | n/a | no useful training window | failed before prompt admission during vLLM profile/dummy run with CUDA illegal memory access |
+
+`49152/256` 的 `perf/mfu/actor_infer=0.433` 低于 `32768/256` 的 `0.476`，但端到端
+`gen` 和 `step` 更短，且 load timeline 显示 64 个 prompt group 可以填满 admission 后迅速进入
+`old_log_prob/update_actor`。当前调参优先级是保留 `49152/256`，后续再围绕 tool/image 处理和采样请求粒度优化 generation throughput。
 
 `ROLLOUT_SKIP_VLLM_DUMMY_LORA=True` is an A100 DP=8 LoRA workaround for vLLM V1 spawn workers.
 The launch script adds the repo root to `PYTHONPATH`, and `sitecustomize.py` patches vLLM dummy
