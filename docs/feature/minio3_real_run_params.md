@@ -78,18 +78,21 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | `REF_LOG_PROB_MICRO_BATCH_SIZE_PER_GPU` | `8` | `16` |
 | `ROLLOUT_N` | `8` | `8` |
 | `ROLLOUT_TP` | `1` | `1` |
-| `ROLLOUT_DP` | `8` | `1` |
-| `ROLLOUT_VLLM_EXECUTOR_BACKEND` | `uni` | unset |
-| `ROLLOUT_SKIP_VLLM_DUMMY_LORA` | `True` | `False` |
+| `ROLLOUT_DP` | `8` | `8` |
+| `ROLLOUT_VLLM_EXECUTOR_BACKEND` | `uni` | `uni` |
+| `ROLLOUT_DISABLE_MM_PREPROCESSOR_CACHE` | `True` | `False` |
+| `ROLLOUT_SKIP_VLLM_DUMMY_LORA` | `True` | `True` |
 | `ROLLOUT_GPU_MEM_UTIL` | `0.9` | `0.9` |
 | `ROLLOUT_FREE_CACHE_ENGINE` | `True` | `True` |
-| `MAX_NUM_BATCHED_TOKENS` | `49152` | `32768` |
+| `MAX_NUM_BATCHED_TOKENS` | `49152` | `65536` |
 | `MAX_NUM_SEQS` | `256` | `256` |
+| `AGENT_NUM_WORKERS` | `32` | `64` |
 | Mini-o3 loss mask | `MINIO3_IGNORE_EXCEED=True`, `MINIO3_IGNORE_VOID=False` | same |
 | prompt admission | enabled, std epsilon `1.0e-4`, state JSONL under `RUN_DIR` | same |
 | `SAVE_FREQ` | `10` | `10` |
+| `TEST_FREQ` | `5` | `10` |
 | `SAVE_LORA_ONLY` | `True` | `True` |
-| logging | `train_step_metrics.jsonl`, `rollout_generations/`, `validation_generations/`, `train_samples.jsonl`, `gpu_util.jsonl`, `perf_debug_summary.json` | same |
+| logging | `train_step_metrics.jsonl`, `rollout_generations/`, `validation_generations/`, `train_samples.jsonl`, `gpu_util.jsonl`, `perf_debug_summary.json` | same, plus `MINIO3_STAGE_LOG=1` |
 | actor/ref offload | enabled | enabled |
 | LoRA | rank `8`, alpha `16`, text-layer q/k/v/o/mlp regex | same |
 
@@ -100,6 +103,16 @@ GPU util 原始采样默认写入 `gpu_util.jsonl`；调速辅助汇总默认写
 `perf_debug_summary.json`。这两个文件只用于 throughput/debug，不作为模型质量训练结果。
 汇总方式见
 [minio3_gpu_monitoring.md](minio3_gpu_monitoring.md)。
+
+H200 profile 当前按本地 8x H200 正式长训默认更激进：`ROLLOUT_DP=8`、vLLM
+`uni` backend、开启 vLLM mm preprocessor cache、跳过 dummy LoRA、
+`MAX_NUM_BATCHED_TOKENS=65536`、`MAX_NUM_SEQS=256`、`AGENT_NUM_WORKERS=64`、
+`TOTAL_TRAINING_STEPS=100`、`TEST_FREQ=10`。默认 `RUN_DIR` 带时间戳，避免正式长训
+复用旧 checkpoint 目录；同时打开 `MINIO3_STAGE_LOG=1` 和
+`MINIO3_TRAJ_STATUS_INTERVAL_S=15`，让 `perf_debug_summary.json` 能汇总 admission/worker
+load timeline。如果 vLLM profile/dummy stage 或长训早期出现 CUDA illegal memory
+access / OOM，第一回退档是只把 `MAX_NUM_BATCHED_TOKENS=49152`，其它 H200 参数保持
+不变；第二回退档才考虑 `ROLLOUT_DP=1`。
 
 2026-05-19 A100 单步对比结论：在 `TRAIN_BATCH_SIZE=64`、`ROLLOUT_N=8`、
 禁 validation/checkpoint、强制 admission accept 的设置下，`MAX_NUM_SEQS=256`
