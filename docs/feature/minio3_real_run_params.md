@@ -87,6 +87,9 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | `MAX_NUM_BATCHED_TOKENS` | `49152` | `65536` |
 | `MAX_NUM_SEQS` | `256` | `256` |
 | `AGENT_NUM_WORKERS` | `32` | `64` |
+| reward backend | rule reward | DeepSeek self-judge by default |
+| `SELF_JUDGE_MODEL` | unset | `deepseek-v4-flash` |
+| `LLM_JUDGE_MAX_RETRIES` | unset | `5` |
 | Mini-o3 loss mask | `MINIO3_IGNORE_EXCEED=True`, `MINIO3_IGNORE_VOID=False` | same |
 | prompt admission | enabled, std epsilon `1.0e-4`, state JSONL under `RUN_DIR` | same |
 | `SAVE_FREQ` | `10` | `10` |
@@ -107,7 +110,11 @@ GPU util 原始采样默认写入 `gpu_util.jsonl`；调速辅助汇总默认写
 H200 profile 当前按本地 8x H200 正式长训默认更激进：`ROLLOUT_DP=8`、vLLM
 `uni` backend、开启 vLLM mm preprocessor cache、跳过 dummy LoRA、
 `MAX_NUM_BATCHED_TOKENS=65536`、`MAX_NUM_SEQS=256`、`AGENT_NUM_WORKERS=64`、
-`TOTAL_TRAINING_STEPS=100`、`TEST_FREQ=10`。默认 `RUN_DIR` 带时间戳，避免正式长训
+`TOTAL_TRAINING_STEPS=100`、`TEST_FREQ=10`。H200 正式长训默认使用 DeepSeek
+self-judge reward：`SELF_JUDGE_REWARD=True`、`SELF_JUDGE_PROVIDER=deepseek`、
+`SELF_JUDGE_MODEL=deepseek-v4-flash`、`SELF_JUDGE_MAX_TOKENS=8`、
+`SELF_JUDGE_TEMPERATURE=0.0`、`LLM_JUDGE_MAX_RETRIES=5`；需要在运行环境里提供
+`DEEPSEEK_API_KEY`。默认 `RUN_DIR` 带时间戳，避免正式长训
 复用旧 checkpoint 目录；同时打开 `MINIO3_STAGE_LOG=1` 和
 `MINIO3_TRAJ_STATUS_INTERVAL_S=15`，让 `perf_debug_summary.json` 能汇总 admission/worker
 load timeline。如果 vLLM profile/dummy stage 或长训早期出现 CUDA illegal memory

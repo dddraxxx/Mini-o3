@@ -19,6 +19,22 @@ RUN_DIR=${RUN_DIR:-$PROJECT_DIR/save/$RUN_ID}
 export MINIO3_STAGE_LOG=${MINIO3_STAGE_LOG:-1}
 export MINIO3_TRAJ_STATUS_INTERVAL_S=${MINIO3_TRAJ_STATUS_INTERVAL_S:-15}
 
+SELF_JUDGE_REWARD=${SELF_JUDGE_REWARD:-True}
+SELF_JUDGE_PROVIDER=${SELF_JUDGE_PROVIDER:-deepseek}
+if [[ "$SELF_JUDGE_PROVIDER" == "deepseek" ]]; then
+    SELF_JUDGE_MODEL=${SELF_JUDGE_MODEL:-deepseek-v4-flash}
+    SELF_JUDGE_BASE_URL=${SELF_JUDGE_BASE_URL:-https://api.deepseek.com}
+else
+    SELF_JUDGE_MODEL=${SELF_JUDGE_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+    SELF_JUDGE_BASE_URL=${SELF_JUDGE_BASE_URL:-https://openrouter.ai/api/v1}
+fi
+SELF_JUDGE_REASONING_EFFORT=${SELF_JUDGE_REASONING_EFFORT:-none}
+SELF_JUDGE_MAX_TOKENS=${SELF_JUDGE_MAX_TOKENS:-8}
+SELF_JUDGE_TEMPERATURE=${SELF_JUDGE_TEMPERATURE:-0.0}
+LLM_JUDGE_MAX_RETRIES=${LLM_JUDGE_MAX_RETRIES:-${SELF_JUDGE_MAX_RETRIES:-5}}
+SELF_JUDGE_TIMEOUT=${SELF_JUDGE_TIMEOUT:-60}
+SELF_JUDGE_INITIAL_DELAY=${SELF_JUDGE_INITIAL_DELAY:-1.0}
+
 MODEL_PATH=${MODEL_PATH:-Mini-o3/Mini-o3-7B-SFT}
 if [[ -z "${LORA_TARGET_MODULES:-}" ]]; then
     case "${MODEL_PATH,,}" in
@@ -95,4 +111,15 @@ VAL_ONLY=${VAL_ONLY:-False} \
 NGPUS_PER_NODE=${NGPUS_PER_NODE:-8} \
 PROJECT_NAME=${PROJECT_NAME:-Mini-o3} \
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-$RUN_ID} \
-bash "$PROJECT_DIR/examples/minio3/run_qwen3_vl_8b_crop_lora_fsdp.sh" "$@"
+bash "$PROJECT_DIR/examples/minio3/run_qwen3_vl_8b_crop_lora_fsdp.sh" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_reward=${SELF_JUDGE_REWARD}" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_provider=${SELF_JUDGE_PROVIDER}" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_model=${SELF_JUDGE_MODEL}" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_base_url=${SELF_JUDGE_BASE_URL}" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_reasoning_effort=${SELF_JUDGE_REASONING_EFFORT}" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_max_tokens=${SELF_JUDGE_MAX_TOKENS}" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_temperature=${SELF_JUDGE_TEMPERATURE}" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_max_retries=${LLM_JUDGE_MAX_RETRIES}" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_timeout=${SELF_JUDGE_TIMEOUT}" \
+  "+reward.custom_reward_function.reward_kwargs.self_judge_initial_delay=${SELF_JUDGE_INITIAL_DELAY}" \
+  "$@"
