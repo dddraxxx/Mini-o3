@@ -256,29 +256,44 @@ MiniO3PromptAdmissionCollector
 
   while accepted_groups not enough:
     log all_groups status
-    submit pending while accepted + running < target, mark running
+    fetch pending until accepted + pending + running reaches admission_window
+    submit pending while accepted + running < admission_window and running < pool_size
     await FIRST_COMPLETED
 
     if group finishes:
       run reward / rejection rule
       accepted -> mark accepted and save to accepted_groups
       rejected -> mark rejected
-      refill that slot with a new pending group
 
-  copy unfinished running groups back to pending if any remain
-  try cancel unfinished requests only when configured
+  target filled -> copy unfinished running groups back to pending
+  try cancel unfinished Ray refs only when configured
   pop accepted/rejected/running groups from all_groups
   build one DataProto from accepted_groups
 ```
 
 补充细节：
 
-- 当前实现是 no-oversubmit：提交新 group 时保持 `accepted + running <= target_prompt_groups`。
-  这样 target 一旦填满，理论上没有额外 running group 需要 cancel，可以更快进入
-  `old_log_prob` / `update_actor`，也避免 target filled 后继续给 vLLM 塞无用请求。
+- `trainer.prompt_admission_pool_size` 是 bounded admission window。默认等于
+  `target_prompt_groups=train_batch_size`，保持 no-oversubmit；`pool_size > target`
+  时最多只允许 `pool_size - target` 个 unfinished running group，避免 target 填满后继续无限补新请求。
+- 2026-05-19 发现过一个旧实现问题：`pool_size=96` 只增加 pending prefetch，
+  实际 running 仍被 `accepted + running < target_prompt_groups` 限在 64。后续一次
+  `running < pool_size` 的修复又过度补请求，`pool_size=96` 在 target filled 时剩
+  95 个 unfinished group；当前修正为 `accepted + running < admission_window`。
 - 如果异常退出或配置导致仍有 unfinished running group，copy running back to pending 是有意的：
   unfinished group 没有被 reward / reject / train，重发可以避免慢样本被系统性丢掉。
 - step 结束时可对 unfinished running Ray refs 尝试 cancel，释放后续调度压力；如果底层请求已经跑完但 handle 不再属于当前 step，late output 不进入 PPO batch。
+- `ray.cancel()` 只能取消 Ray task/ref，不保证已经进入 vLLM engine 的 HTTP/generate
+  request 立刻退出。2026-05-19 的 `pool_size=96` 复测确认当前 vLLM 0.9.2 + DP=8
+  不适合 destructive abort：`abort_replicas()` 会在 vLLM DP `all_reduce` 中打死
+  EngineCore，后续 `update_weights` 报 `EngineDeadError`。因此当前正式 A100 路径不在
+  trainer 里做 vLLM abort，`pool_size > target` 只作为实验项；默认仍保持
+  `pool_size=train_batch_size`。
+- 2026-05-19 复测当前默认 no-oversubmit 路径
+  `admission_window_default_mbt49152_mns256_bs64_20260519_195729`：`pool_size=64`、
+  `admission_window=64`、`accepted=64`、`rejected=81`、`submitted=145`、
+  `cancelled_running_groups=0`、`response/aborted_ratio=0`，单步训练 `exit_code=0`，
+  能从 prompt admission 正常进入 `old_log_prob` / `update_actor` / `update_weights`。
 - accepted 只进入 `accepted_groups`；等 buffer 满了再 build 一个完整 `DataProto` 交给 trainer。
 - pending group 保存在 trainer 内存 deque，跨 PPO step 继续重发；可选 `trainer.prompt_admission_state_path` 追加 JSONL 状态快照，便于看 pending/retry 状态。
 - log 走 trainer metrics/file logger：每 step 记录 `submitted/accepted/rejected/pending/cancelled/retried` 计数、last reward stats、least-inflight worker 状态，写到 console/wandb/`train_step_metrics.jsonl`。

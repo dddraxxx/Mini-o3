@@ -187,6 +187,7 @@ def test_prompt_admission_collects_until_batch_is_admitted(tmp_path):
     assert metrics["prompt_admission/fetched_batches"] == pytest.approx(1.0)
     assert metrics["prompt_admission/pending_groups"] == pytest.approx(0.0)
     assert metrics["prompt_admission/timing/fake_rollout"] == pytest.approx(0.5)
+    assert admitted_batch.meta_info["prompt_admission_cancelled_unfinished"] is False
 
     state_rows = (tmp_path / "prompt_admission_state.jsonl").read_text().splitlines()
     assert state_rows
@@ -207,17 +208,18 @@ def test_prompt_admission_reuses_unfinished_group_across_steps(tmp_path):
     )
     first_metrics = {}
 
-    trainer._collect_prompt_admitted_batch(
+    first_batch, _, _ = trainer._collect_prompt_admitted_batch(
         _prompt_dict(10),
         iter([_prompt_dict(20)]),
         first_metrics,
     )
 
-    assert first_metrics["prompt_admission/submitted_groups"] == pytest.approx(1.0)
-    assert first_metrics.get("prompt_admission/unfinished_running_groups", 0.0) == pytest.approx(0.0)
-    assert first_metrics.get("prompt_admission/cancelled_running_groups", 0.0) == pytest.approx(0.0)
+    assert first_batch.meta_info["prompt_admission_cancelled_unfinished"] is True
+    assert first_metrics["prompt_admission/submitted_groups"] == pytest.approx(2.0)
+    assert first_metrics.get("prompt_admission/unfinished_running_groups", 0.0) == pytest.approx(1.0)
+    assert first_metrics.get("prompt_admission/cancelled_running_groups", 0.0) == pytest.approx(1.0)
     assert first_metrics["prompt_admission/pending_groups"] == pytest.approx(1.0)
-    assert first_metrics["prompt_admission/reused_pending_groups"] == pytest.approx(0.0)
+    assert first_metrics["prompt_admission/reused_pending_groups"] == pytest.approx(1.0)
 
     trainer.config.trainer.prompt_admission_pool_size = 1
     second_metrics = {}

@@ -838,6 +838,7 @@ class RayPPOTrainer:
         target_prompt_groups = int(self.config.data.train_batch_size)
         pool_size = int(self.config.trainer.get("prompt_admission_pool_size", 0) or target_prompt_groups)
         pool_size = max(1, pool_size)
+        admission_window = max(target_prompt_groups, pool_size)
         epsilon = float(self.config.trainer.get("prompt_admission_reward_std_epsilon", 1e-4))
         wait_timeout = float(self.config.trainer.get("prompt_admission_wait_timeout_s", 0.1))
         cancel_unfinished_value = self.config.trainer.get("prompt_admission_cancel_unfinished", True)
@@ -876,7 +877,7 @@ class RayPPOTrainer:
             return max_submitted_groups <= 0 or submitted_groups < max_submitted_groups
 
         def needed_running_slots() -> int:
-            return max(0, target_prompt_groups - len(accepted_batches) - len(running))
+            return max(0, admission_window - len(accepted_batches) - len(running))
 
         def submit_pending_groups() -> None:
             nonlocal submitted_groups
@@ -894,7 +895,7 @@ class RayPPOTrainer:
                 admission_metrics["prompt_admission/submitted_groups"] = float(submitted_groups)
 
         while len(accepted_batches) < target_prompt_groups:
-            while len(pending) + len(running) < pool_size and can_submit_more():
+            while len(accepted_batches) + len(pending) + len(running) < admission_window and can_submit_more():
                 if not fetch_more_groups():
                     break
 
@@ -971,11 +972,15 @@ class RayPPOTrainer:
         admitted_batches = accepted_batches[:target_prompt_groups]
         _align_non_tensor_batch_keys(admitted_batches)
         admitted_batch = DataProto.concat(admitted_batches)
+        admitted_batch.meta_info["prompt_admission_cancelled_unfinished"] = bool(
+            admission_metrics["prompt_admission/cancelled_running_groups"] > 0
+        )
         reward_tensor, reward_extra_infos_dict = extract_reward(admitted_batch)
 
         admission_metrics["prompt_admission/enabled"] = 1.0
         admission_metrics["prompt_admission/target_groups"] = float(target_prompt_groups)
         admission_metrics["prompt_admission/pool_size"] = float(pool_size)
+        admission_metrics["prompt_admission/admission_window"] = float(admission_window)
         admission_metrics["prompt_admission/pending_groups"] = float(len(pending))
         admission_metrics["prompt_admission/submitted_per_accepted"] = float(submitted_groups) / max(
             1.0, float(len(accepted_batches))
@@ -1883,6 +1888,7 @@ class RayPPOTrainer:
                             if curr_step_profile:
                                 self.llm_server_manager.start_profile()
                             batch, _, _ = self._collect_prompt_admitted_batch(batch_dict, train_iterator, metrics)
+                            batch.meta_info.pop("prompt_admission_cancelled_unfinished", None)
                             self.checkpoint_manager.sleep_replicas()
                             if curr_step_profile:
                                 self.llm_server_manager.stop_profile()

@@ -140,6 +140,25 @@ MAX_NUM_BATCHED_TOKENS=49152
 | `mbt49152_mns256_bs64_20260519_165749` (`49152/256`) | pass | `439.48s` | `713.44s` | `362.38 tok/s/GPU` | mean `41.90`, p50 `29`, p95 `99` | `prompt_load/running_groups` mean `46.62`, p50 `49`, p95 `64`, max `64`; `max_worker_inflight` mean `1.90`, max `2`; `nonzero_workers` mean `27.28`, p95 `32`; `traj_active_ratio` mean `0.63`, p95 `1.00` |
 | `mbt65536_mns256_bs64_20260519_164656` (`65536/256`) | fail | n/a | n/a | n/a | no useful training window | failed before prompt admission during vLLM profile/dummy run with CUDA illegal memory access |
 
+`PROMPT_ADMISSION_POOL_SIZE=96` was tested separately on the same A100 profile. The attempted
+destructive-cancel variant filled 64 accepted prompt groups but left 95 unfinished groups, then
+`abort_replicas()` killed vLLM DP EngineCore during `all_reduce` and `update_weights` failed with
+`EngineDeadError`. Current A100 formal default therefore stays with no oversubmit:
+`PROMPT_ADMISSION_POOL_SIZE` unset, which means `pool_size=train_batch_size=64`. Larger admission
+windows are experimental until vLLM request abort is safe for DP=8 or the rollout path becomes fully
+async across the actor update.
+
+The follow-up no-oversubmit run
+`admission_window_default_mbt49152_mns256_bs64_20260519_195729` completed with `exit_code=0`.
+It used the current formal A100 knobs (`MAX_NUM_BATCHED_TOKENS=49152`, `MAX_NUM_SEQS=256`,
+`TRAIN_BATCH_SIZE=64`, `PROMPT_ADMISSION_POOL_SIZE` unset) and real prompt admission. It filled
+`64` accepted groups after `145` submitted / `81` rejected groups, with `cancelled_running_groups=0`
+and `response/aborted_ratio=0`. Timings were `gen=1006.62s`, `old_log_prob=102.73s`,
+`update_actor=146.10s`, `update_weights=18.65s`, `step=1275.75s`, with
+`perf/throughput=185.53` and `perf/mfu/actor_infer=0.411`. This is slower than forced-admit tuning
+runs because it includes rejection sampling overhead, but it verifies the safe path can fill the
+accepted batch and enter backward/update cleanly.
+
 `49152/256` 的 `perf/mfu/actor_infer=0.433` 低于 `32768/256` 的 `0.476`，但端到端
 `gen` 和 `step` 更短，且 load timeline 显示 64 个 prompt group 可以填满 admission 后迅速进入
 `old_log_prob/update_actor`。当前调参优先级是保留 `49152/256`，后续再围绕 tool/image 处理和采样请求粒度优化 generation throughput。
