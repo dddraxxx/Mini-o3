@@ -4,7 +4,9 @@
 set -xeuo pipefail
 
 PROJECT_DIR=${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
-read -r -a PYTHON_CMD <<< "${PYTHON_CMD:-uv run --active --no-sync python}"
+PYTHON_CMD_DEFAULT="uv run --project $PROJECT_DIR --no-sync python"
+export PYTHON_CMD="${PYTHON_CMD:-$PYTHON_CMD_DEFAULT}"
+read -r -a PYTHON_CMD_ARR <<< "$PYTHON_CMD"
 
 export HF_HOME=${HF_HOME:-/mnt/localssd/.cache/huggingface}
 export WANDB_MODE=${WANDB_MODE:-disabled}
@@ -25,10 +27,10 @@ if [[ "${CHECK_QWEN35_ENV:-True}" == "True" && "$MODEL_PATH" == *"Qwen3.5"* ]]; 
   if [[ "${QWEN35_LOCAL_FILES_ONLY:-True}" == "True" ]]; then
     QWEN35_ENV_ARGS+=(--local-files-only)
   fi
-  "${PYTHON_CMD[@]}" "$PROJECT_DIR/examples/minio3/check_qwen35_env.py" "${QWEN35_ENV_ARGS[@]}"
+  "${PYTHON_CMD_ARR[@]}" "$PROJECT_DIR/examples/minio3/check_qwen35_env.py" "${QWEN35_ENV_ARGS[@]}"
 fi
 
-"${PYTHON_CMD[@]}" "$PROJECT_DIR/examples/minio3/prepare_visualprobe_val_smoke.py" \
+"${PYTHON_CMD_ARR[@]}" "$PROJECT_DIR/examples/minio3/prepare_visualprobe_val_smoke.py" \
   --dataset-root "${VISUALPROBE_DATASET_ROOT:-$PROJECT_DIR/data}" \
   --image-root "${VISUALPROBE_IMAGE_ROOT:-$PROJECT_DIR/data}" \
   --local-save-dir "$DATA_DIR" \
@@ -95,4 +97,6 @@ bash "$PROJECT_DIR/examples/minio3/run_qwen3_vl_8b_crop_lora_fsdp.sh" \
   trainer.val_only=True \
   trainer.validation_data_dir="$RUN_DIR/validation_generations" \
   trainer.default_local_dir="$RUN_DIR" \
+  ++ray_kwargs.ray_init.include_dashboard="${RAY_INCLUDE_DASHBOARD:-False}" \
+  ++ray_kwargs.ray_init.num_cpus="${RAY_NUM_CPUS:-8}" \
   "$@"

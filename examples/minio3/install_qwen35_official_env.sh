@@ -16,6 +16,10 @@ uv pip install --python "$PYTHON" \
   "qwen-vl-utils>=0.0.14" \
   "pandas>=2.3.0,<4"
 
+uv pip install --python "$PYTHON" \
+  "flashinfer-jit-cache==0.6.6+cu129" \
+  --index-url https://flashinfer.ai/whl/cu129
+
 uv pip install --python "$PYTHON" --no-deps \
   "transformers @ git+https://github.com/huggingface/transformers.git@$TRANSFORMERS_REF"
 

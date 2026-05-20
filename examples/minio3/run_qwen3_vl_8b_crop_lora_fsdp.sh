@@ -5,7 +5,8 @@ set -xeuo pipefail
 
 PROJECT_DIR=${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 export PYTHONPATH="$PROJECT_DIR${PYTHONPATH:+:$PYTHONPATH}"
-read -r -a PYTHON_CMD <<< "${PYTHON_CMD:-uv run --active --no-sync python}"
+PYTHON_CMD_DEFAULT="uv run --project $PROJECT_DIR --no-sync python"
+read -r -a PYTHON_CMD <<< "${PYTHON_CMD:-$PYTHON_CMD_DEFAULT}"
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-VL-8B-Instruct}
 NNODES=${NNODES:-1}
 NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}

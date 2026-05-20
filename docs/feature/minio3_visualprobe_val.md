@@ -62,6 +62,8 @@ script settings so the smoke can expose batching/GPU-util problems early.
 | `VAL_N` | `1` |
 | `LORA_RANK` | `0` |
 | `LOG_VAL_GENERATIONS` | `10` |
+| `RAY_INCLUDE_DASHBOARD` | `False` |
+| `RAY_NUM_CPUS` | `8` |
 
 Greedy run:
 
@@ -101,6 +103,10 @@ bash examples/minio3/run_real_val_visualprobe_smoke.sh
   model processor/chat template compatibility, and vLLM max model length.
 - If the smoke runs but GPU util is low, check per-turn tool/image
   preprocessing time and request granularity before changing admission logic.
+- In validation, `ray_trainer.py` pads each val batch to
+  `actor_rollout_ref.rollout.agent.num_workers` before async rollout and unpads
+  after generation. A 1-case smoke with `AGENT_NUM_WORKERS=4` therefore starts 4
+  agent-loop trajectories, but writes one unpadded validation JSONL row.
 
 ## Smoke Results
 
@@ -132,6 +138,29 @@ The first blocker is environment support for Qwen3.5, not prompt length or
 sampling. Keep `CHECK_QWEN35_ENV=True` until the env is upgraded, so the smoke
 fails before Ray starts.
 
+2026-05-20 1-case FlashInfer-cache smoke:
+
+- Run id:
+  `visualprobe_val_smoke1_qwen35_9b_temp0_flashcache_20260520_012050`.
+- Log:
+  `logs/minio3_val_smoke1_flashcache_0520.log`.
+- Run dir:
+  `save/visualprobe_val_smoke1_qwen35_9b_temp0_flashcache_20260520_012050`.
+- The run reached vLLM generation with Qwen3.5, produced
+  `validation_generations/0.jsonl`, and wrote one metrics row to
+  `train_step_metrics.jsonl`.
+- Metrics are expected zero because this smoke used `empty_reward.py`; the model
+  output answered the example text question but the empty reward reports
+  `score=0.0`.
+- `AGENT_NUM_WORKERS=4` padded the 1-case validation batch to 4 internal
+  trajectories; only one unpadded row was dumped.
+- The wrapper exited 127 after successful validation because the launcher
+  attempted to execute the already-built Hydra argument list a second time,
+  starting at `+algorithm.max_num_gen_batches=256`. The val path itself had
+  already completed. The wrapper now keeps `PYTHON_CMD` as an exported scalar
+  for the inner launcher and uses a separate local `PYTHON_CMD_ARR` only for
+  commands executed by the outer smoke script.
+
 ## Formal H200 Val Batch
 
 For formal validation, keep the total number of concurrent val trajectories in
@@ -142,12 +171,13 @@ train trajectory count = TRAIN_BATCH_SIZE * ROLLOUT_N = 64 * 8 = 512
 val trajectory count = VAL_BATCH_SIZE * VAL_N = 512 * 1 = 512
 ```
 
-The current val path does not fan out with train `ROLLOUT_N`; it effectively
-runs one trajectory per val sample when `VAL_N=1`. With
-`AGENT_NUM_WORKERS=64`, `VAL_BATCH_SIZE=512` gives 8 val trajectories per
-agent-loop worker and about 64 concurrent requests per vLLM DP replica when
-`ROLLOUT_DP=8`. This is below the H200 script's `MAX_NUM_SEQS=256` and avoids
-the padding waste of small val batches.
+The current val path does not fan out with train `ROLLOUT_N`; it repeats with
+`VAL_N` and then pads the validation batch to `AGENT_NUM_WORKERS`. With
+`AGENT_NUM_WORKERS=64`, `VAL_BATCH_SIZE=512` and `VAL_N=1`, the batch remains
+512 trajectories after padding, gives 8 val trajectories per agent-loop worker,
+and gives about 64 concurrent requests per vLLM DP replica when `ROLLOUT_DP=8`.
+This is below the H200 script's `MAX_NUM_SEQS=256` and avoids the padding waste
+of small val batches.
 
 ## Official Qwen3.5 Env Target
 
@@ -188,6 +218,8 @@ would silently downgrade the official transformers commit back to a 4.x release.
 | `torch` | `2.10.0+cu128` |
 | `vllm` | `0.18.0` |
 | `transformers` | `5.3.0.dev0` from `cc7ab9be508ce6ed3637bba9e50367b29b742dc6` |
+| `flashinfer-python` | `0.6.6` |
+| `flashinfer-jit-cache` | `0.6.6+cu129` |
 | `flash-attn` | `2.8.3`, rebuilt after the torch upgrade |
 | `causal-conv1d` | `1.6.2.post1` |
 | `flash-linear-attention` / `fla` | `0.5.0` |
@@ -203,6 +235,9 @@ Verified locally:
 - `vllm.model_executor.models.qwen3_5` is importable.
 - `flash-attn`, `causal-conv1d`, `flash-linear-attention`, and
   `qwen-vl-utils` import cleanly.
+- `flashinfer show-config` reports matching
+  `flashinfer-python==0.6.6` and `flashinfer-jit-cache==0.6.6+cu129`; the GDN
+  prefill op executes on H200 without local JIT compilation.
 - `AsyncLLMEngine.abort` and vLLM v1 `AsyncLLM.abort` are present.
 - `uv pip check` still reports the expected official-stack metadata conflict:
   `vllm` requires `transformers>=4.56.0,<5`, while the Qwen3.5 env uses
@@ -216,3 +251,16 @@ Target env checks before rerunning VP:
   `model_type=qwen3_5`.
 - `flash-attn`, `causal-conv1d`, and `flash-linear-attention` import cleanly.
 - vLLM request cancellation APIs remain available for Mini-o3 prompt admission.
+
+FlashInfer note:
+
+- Plain local FlashInfer JIT on this node tried to build GDN kernels against the
+  system CUDA 12.4 toolchain and failed on newer CCCL/PTX symbols.
+- Do not install a mismatched JIT cache package: `flashinfer-jit-cache 0.6.11`
+  fails the package-version check with `flashinfer-python 0.6.6`.
+- The reproducible path is the matched cache package from the FlashInfer cu129
+  wheel index:
+  `uv pip install flashinfer-jit-cache==0.6.6+cu129 --index-url https://flashinfer.ai/whl/cu129`.
+- If FlashInfer regresses again, the fallback to investigate is vLLM Qwen3.5
+  `additional_config.gdn_prefill_backend=triton`; keep FlashInfer enabled while
+  the matched cache works.
