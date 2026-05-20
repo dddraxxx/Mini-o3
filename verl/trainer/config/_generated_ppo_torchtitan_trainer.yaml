@@ -829,6 +829,7 @@ trainer:
   prompt_admission_reward_std_epsilon: 0.0001
   prompt_admission_wait_timeout_s: 0.1
   prompt_admission_cancel_unfinished: true
+  prompt_admission_abort_unfinished_requests: false
   prompt_admission_state_path: null
   nnodes: 1
   n_gpus_per_node: 8

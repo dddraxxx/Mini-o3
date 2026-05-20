@@ -262,6 +262,7 @@ TRAINER=(
     trainer.prompt_admission_reward_std_epsilon=${PROMPT_ADMISSION_REWARD_STD_EPSILON}
     trainer.prompt_admission_wait_timeout_s=${PROMPT_ADMISSION_WAIT_TIMEOUT_S}
     trainer.prompt_admission_cancel_unfinished=${PROMPT_ADMISSION_CANCEL_UNFINISHED}
+    trainer.prompt_admission_abort_unfinished_requests=${PROMPT_ADMISSION_ABORT_UNFINISHED_REQUESTS:-False}
 )
 
 REWARD=(

@@ -154,6 +154,10 @@ trainer:
   # Whether to cancel unfinished async prompt groups once enough admitted groups are collected
   prompt_admission_cancel_unfinished: True
 
+  # Whether to abort unfinished vLLM requests after prompt admission fills the accepted batch.
+  # Requires a vLLM version whose pause/abort path is safe for the configured DP shape.
+  prompt_admission_abort_unfinished_requests: False
+
   # Optional JSONL path for cross-step prompt admission pending-state snapshots
   prompt_admission_state_path: null
 

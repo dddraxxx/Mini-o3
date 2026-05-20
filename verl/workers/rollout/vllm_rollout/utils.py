@@ -274,10 +274,11 @@ class vLLMColocateWorkerExtension:
         """Get ZMQ handle for communication.
 
         Uses Ray job id + replica_rank + node-local vLLM rank to form the handle.
-        In vLLM V1 DP workers, ``local_rank`` can be 0 inside every EngineCore
-        subprocess even when the process uses a distinct GPU. ``rank`` remains
-        unique across EngineCores, so reducing it by the local device count maps
-        it back to the colocated trainer rank used by ServerAdapter.
+        Different vLLM V1 versions expose the DP EngineCore identity
+        differently: some keep ``local_rank`` at 0 and make ``rank`` unique,
+        while vLLM 0.12.0 can keep ``rank`` at 0 and make ``local_rank`` unique.
+        Match the trainer-side ServerAdapter rank with whichever value is the
+        usable node-local rank.
         """
         replica_rank = os.environ.get("VERL_REPLICA_RANK", "0")
         job_id = os.environ.get("VERL_RAY_JOB_ID", "0")
@@ -288,18 +289,29 @@ class vLLMColocateWorkerExtension:
 
         local_rank = getattr(self, "local_rank", 0)
         rank = getattr(self, "rank", local_rank)
-        transfer_rank = int(rank)
+        local_rank_int = int(local_rank)
+        rank_int = int(rank)
+        transfer_rank = rank_int
+        transfer_rank_source = "rank"
         if len(visible_device_list) == 1 and visible_device_list[0].isdigit():
             # vLLM V1 uni DP starts each EngineCore with a single visible GPU
             # while keeping rank/local_rank at 0. Match the trainer-side
             # ServerAdapter rank by using that physical visible device id.
             transfer_rank = int(visible_device_list[0])
+            transfer_rank_source = "single_visible_device"
         elif visible_device_list:
+            if rank_int == 0 and local_rank_int != 0:
+                transfer_rank = local_rank_int
+                transfer_rank_source = "local_rank"
             transfer_rank %= len(visible_device_list)
+        elif rank_int == 0 and local_rank_int != 0:
+            transfer_rank = local_rank_int
+            transfer_rank_source = "local_rank"
 
         _minio3_stage_log(
             f"zmq_handle replica_rank={replica_rank} rank={rank} local_rank={local_rank} "
-            f"transfer_rank={transfer_rank} visible_devices={visible_devices}"
+            f"transfer_rank={transfer_rank} transfer_rank_source={transfer_rank_source} "
+            f"visible_devices={visible_devices}"
         )
         return f"ipc:///tmp/rl-colocate-zmq-{job_id}-replica-{replica_rank}-rank-{transfer_rank}.sock"
 

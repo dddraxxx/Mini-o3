@@ -751,6 +751,12 @@ class RayPPOTrainer:
             return value.lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
+    def _trainer_bool(self, key: str, default: bool = False) -> bool:
+        value = self.config.trainer.get(key, default)
+        if isinstance(value, str):
+            return value.lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
     def _prompt_admission_pending_groups(self) -> deque:
         if not hasattr(self, "_mini_o3_prompt_admission_pending"):
             self._mini_o3_prompt_admission_pending = deque()
@@ -1882,13 +1888,23 @@ class RayPPOTrainer:
                     num_sampled_prompts = len(gen_batch_output)
 
                 is_last_step = self.global_steps >= self.total_training_steps
+                prompt_admission_aborted_unfinished = False
                 with marked_timer("step", timing_raw):
                     if self._prompt_admission_enabled():
                         with marked_timer("gen", timing_raw, color="red"):
                             if curr_step_profile:
                                 self.llm_server_manager.start_profile()
                             batch, _, _ = self._collect_prompt_admitted_batch(batch_dict, train_iterator, metrics)
-                            batch.meta_info.pop("prompt_admission_cancelled_unfinished", None)
+                            cancelled_unfinished = bool(
+                                batch.meta_info.pop("prompt_admission_cancelled_unfinished", False)
+                            )
+                            if cancelled_unfinished and self._trainer_bool(
+                                "prompt_admission_abort_unfinished_requests", False
+                            ):
+                                _minio3_stage_log("prompt_admission.abort_unfinished.start")
+                                self.checkpoint_manager.abort_replicas()
+                                _minio3_stage_log("prompt_admission.abort_unfinished.done")
+                                prompt_admission_aborted_unfinished = True
                             self.checkpoint_manager.sleep_replicas()
                             if curr_step_profile:
                                 self.llm_server_manager.stop_profile()
@@ -2105,6 +2121,10 @@ class RayPPOTrainer:
                         # update weights from trainer to rollout
                         with marked_timer("update_weights", timing_raw, color="red"):
                             self.checkpoint_manager.update_weights(self.global_steps)
+                            if prompt_admission_aborted_unfinished:
+                                _minio3_stage_log("prompt_admission.resume_generation.start")
+                                self.checkpoint_manager.resume_generation_replicas()
+                                _minio3_stage_log("prompt_admission.resume_generation.done")
 
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
