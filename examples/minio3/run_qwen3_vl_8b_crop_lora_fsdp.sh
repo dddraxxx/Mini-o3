@@ -103,6 +103,8 @@ GPU_MONITOR_SAMPLE_TIMEOUT=${GPU_MONITOR_SAMPLE_TIMEOUT:-5.0}
 GPU_MONITOR_PATH=${GPU_MONITOR_PATH:-}
 PERF_DEBUG_SUMMARY_ENABLE=${PERF_DEBUG_SUMMARY_ENABLE:-True}
 PERF_DEBUG_SUMMARY_PATH=${PERF_DEBUG_SUMMARY_PATH:-}
+# Keep Ray's dashboard HTTP server off by default to avoid port conflicts with other local jobs.
+RAY_INCLUDE_DASHBOARD=${RAY_INCLUDE_DASHBOARD:-False}
 
 PROJECT_NAME=${PROJECT_NAME:-minio3_official_verl}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-qwen3_vl_8b_crop_lora_$(date +%Y%m%d_%H%M)}
@@ -269,6 +271,10 @@ REWARD=(
     reward.custom_reward_function.name=compute_score
 )
 
+RAY_INIT=(
+    ++ray_kwargs.ray_init.include_dashboard=${RAY_INCLUDE_DASHBOARD}
+)
+
 if [ -n "${TOTAL_TRAINING_STEPS}" ]; then
     TRAINER+=(trainer.total_training_steps=${TOTAL_TRAINING_STEPS})
 fi
@@ -331,6 +337,7 @@ TRAIN_EXIT_CODE=0
     "${REF[@]}" \
     "${REWARD[@]}" \
     "${TRAINER[@]}" \
+    "${RAY_INIT[@]}" \
     "$@" || TRAIN_EXIT_CODE=$?
 
 stop_gpu_monitor
