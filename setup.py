@@ -29,9 +29,9 @@ install_requires = [
     "datasets",
     "dill",
     "hydra-core",
-    "numpy<2.0.0",
+    "numpy<3.0.0",
     "openai",
-    "pandas",
+    "pandas>=2.3.0,<4",
     "peft",
     "pyarrow>=19.0.0",
     "pybind11",
@@ -47,10 +47,18 @@ install_requires = [
 
 TEST_REQUIRES = ["pytest", "pre-commit", "py-spy", "pytest-asyncio", "pytest-rerunfailures"]
 PRIME_REQUIRES = ["pyext"]
-GEO_REQUIRES = ["mathruler", "torchvision", "qwen_vl_utils"]
-GPU_REQUIRES = ["liger-kernel", "flash-attn"]
+GEO_REQUIRES = ["mathruler", "torchvision", "qwen_vl_utils>=0.0.14"]
+GPU_REQUIRES = [
+    "liger-kernel",
+    "flash-attn==2.8.3",
+    "causal-conv1d>=1.6.2.post1",
+    "flash-linear-attention>=0.5.0",
+]
 MATH_REQUIRES = ["math-verify"]  # Add math-verify as an optional dependency
-VLLM_REQUIRES = ["tensordict>=0.8.0,<=0.10.0,!=0.9.0", "vllm>=0.8.5,<=0.12.0"]
+# Qwen3.5 formal runs still need examples/minio3/install_qwen35_official_env.sh
+# after the vLLM extra, because vLLM 0.18 metadata conflicts with the official
+# transformers 5.x Qwen3.5 commit.
+VLLM_REQUIRES = ["tensordict>=0.8.0,<=0.10.0,!=0.9.0", "vllm==0.18.0"]
 TRTLLM_REQUIRES = ["tensorrt-llm>=1.2.0rc6"]
 SGLANG_REQUIRES = [
     "tensordict>=0.8.0,<=0.10.0,!=0.9.0",
