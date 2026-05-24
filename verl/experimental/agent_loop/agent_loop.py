@@ -82,6 +82,71 @@ def _stage_log(message: str) -> None:
         logger.warning("[minio3-stage] %s", message)
 
 
+def _align_batched_position_ids_for_cat(position_ids: list[torch.Tensor]) -> list[torch.Tensor]:
+    """Expand text-only position ids to the mRoPE rank used by vision samples."""
+    target_channels = None
+    for tensor in position_ids:
+        if tensor.dim() >= 3:
+            channels = tensor.shape[-2]
+            target_channels = channels if target_channels is None else max(target_channels, channels)
+
+    if target_channels is None:
+        return position_ids
+
+    aligned = []
+    for tensor in position_ids:
+        if tensor.dim() == 2:
+            tensor = tensor.unsqueeze(1).expand(-1, target_channels, -1).clone()
+        elif tensor.dim() >= 3 and tensor.shape[-2] == 1 and target_channels > 1:
+            tensor = tensor.expand(*tensor.shape[:-2], target_channels, tensor.shape[-1]).clone()
+        aligned.append(tensor)
+    return aligned
+
+
+def _align_unbatched_position_ids_for_pad(position_ids: list[torch.Tensor]) -> list[torch.Tensor]:
+    """Expand per-turn text-only position ids before pad_sequence."""
+    target_channels = None
+    for tensor in position_ids:
+        if tensor.dim() >= 2:
+            channels = tensor.shape[-2]
+            target_channels = channels if target_channels is None else max(target_channels, channels)
+
+    if target_channels is None:
+        return position_ids
+
+    aligned = []
+    for tensor in position_ids:
+        if tensor.dim() == 1:
+            tensor = tensor.unsqueeze(0).expand(target_channels, -1).clone()
+        elif tensor.dim() >= 2 and tensor.shape[-2] == 1 and target_channels > 1:
+            tensor = tensor.expand(*tensor.shape[:-2], target_channels, tensor.shape[-1]).clone()
+        aligned.append(tensor)
+    return aligned
+
+
+def _hf_config_requires_multimodal_processor(hf_config: Any) -> bool:
+    """Return true for HF configs that need a multimodal processor."""
+    if hf_config is None:
+        return False
+    multimodal_attrs = (
+        "vision_config",
+        "audio_config",
+        "image_token_id",
+        "video_token_id",
+        "audio_token_id",
+    )
+    return any(getattr(hf_config, attr, None) is not None for attr in multimodal_attrs)
+
+
+def _messages_contain_multimodal_content(messages: list[dict]) -> bool:
+    def has_multimodal_part(content: Any) -> bool:
+        if isinstance(content, list):
+            return any(isinstance(part, dict) and part.get("type") in {"image", "video", "audio"} for part in content)
+        return False
+
+    return any(has_multimodal_part(message.get("content")) for message in messages)
+
+
 class AgentLoopMetrics(BaseModel):
     """Agent loop performance metrics."""
 
@@ -255,6 +320,11 @@ class AgentLoopBase(ABC):
             dict: Multi-modal data with keys like "images", "videos" and "audios".
         """
         multi_modal_data = {}
+        if self.processor is None and _messages_contain_multimodal_content(messages):
+            raise RuntimeError(
+                "Cannot process multimodal messages because the model processor is unavailable. "
+                "Check processor initialization before rollout."
+            )
         if self.processor is not None:
             image_patch_size = getattr(getattr(self.processor, "image_processor", None), "patch_size", 14)
             if hasattr(self.dataset_cls, "process_multi_modal_info"):
@@ -403,6 +473,16 @@ class AgentLoopWorker:
         self.tokenizer = self.model_config.tokenizer
         self.processor = self.model_config.processor
         self.mm_processor_kwargs = config.data.get("mm_processor_kwargs", {})
+        if self.processor is None and _hf_config_requires_multimodal_processor(self.model_config.hf_config):
+            model_path = getattr(self.model_config, "path", "<unknown>")
+            tokenizer_path = getattr(self.model_config, "local_tokenizer_path", None) or getattr(
+                self.model_config, "tokenizer_path", None
+            )
+            raise RuntimeError(
+                "Multimodal model config requires a processor, but hf_processor returned None. "
+                f"model_path={model_path!r}, tokenizer_path={tokenizer_path!r}. "
+                "Check processor loading warnings and tokenizer/processor files before rollout."
+            )
 
         # Online policy distillation
         self.distillation_enabled = is_distillation_enabled(config.distillation)
@@ -922,6 +1002,7 @@ class AgentLoopWorker:
                     all_attention_mask.append(attention_mask)
                     all_position_ids.append(position_ids)
 
+                all_position_ids = _align_unbatched_position_ids_for_pad(all_position_ids)
                 n = len(outputs)
                 batch = TensorDict(
                     {
@@ -993,7 +1074,8 @@ class AgentLoopWorker:
         response_mask = torch.cat([input.response_mask for input in inputs], dim=0)
         attention_mask = torch.cat([input.attention_mask for input in inputs], dim=0)
         input_ids = torch.cat([input.input_ids for input in inputs], dim=0)
-        position_ids = torch.cat([input.position_ids for input in inputs], dim=0)
+        position_id_tensors = _align_batched_position_ids_for_cat([input.position_ids for input in inputs])
+        position_ids = torch.cat(position_id_tensors, dim=0)
         optional_outputs = {}
         if inputs[0].response_logprobs is not None:
             optional_outputs["rollout_log_probs"] = torch.cat([input.response_logprobs for input in inputs], dim=0)
@@ -1178,6 +1260,7 @@ class AgentLoopManager:
                 for worker, chunk in zip(self.agent_loop_workers, chunkes, strict=True)
             ]
         )
+        self._align_output_position_ids_for_concat(outputs)
         output = DataProto.concat(outputs)
 
         # calculate performance metrics
@@ -1186,6 +1269,18 @@ class AgentLoopManager:
 
         output.meta_info = {"timing": timing, **outputs[0].meta_info}
         return output
+
+    @staticmethod
+    def _align_output_position_ids_for_concat(outputs: list[DataProto]) -> None:
+        outputs_with_position_ids = [
+            output
+            for output in outputs
+            if output.batch is not None and "position_ids" in output.batch.keys()
+        ]
+        position_ids = [output.batch["position_ids"] for output in outputs_with_position_ids]
+        aligned = _align_batched_position_ids_for_cat(position_ids)
+        for output, tensor in zip(outputs_with_position_ids, aligned, strict=True):
+            output.batch["position_ids"] = tensor
 
     def submit_prompt_group(self, prompts: DataProto, group_id: str) -> dict[str, Any]:
         """Submit one prompt group to the least-inflight agent-loop worker."""

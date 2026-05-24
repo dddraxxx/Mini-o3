@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import warnings
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import numpy as np
@@ -25,11 +26,14 @@ from omegaconf import OmegaConf
 from verl.experimental.agent_loop.agent_loop import (
     AgentLoopMetrics,
     AgentLoopOutput,
+    AgentLoopManager,
     AgentLoopWorker,
     DictConfigWrap,
     _InternalAgentLoopOutput,
+    _hf_config_requires_multimodal_processor,
 )
 from verl.experimental.agent_loop.single_turn_agent_loop import SingleTurnAgentLoop
+from verl.protocol import DataProto
 from verl.utils.dataset.rl_dataset import RLHFDataset
 from verl.workers.rollout.replica import TokenOutput
 
@@ -254,6 +258,53 @@ async def test_agent_loop_extra_fields_schema_stable_for_training_concat_on_cpu(
     # And the list-typed fields are actually lists (not missing / scalar).
     assert merged.non_tensor_batch["turn_scores"][0] == []
     assert merged.non_tensor_batch["tool_rewards"][0] == []
+
+
+def test_agent_loop_aligns_text_and_mrope_position_ids_on_cpu():
+    dummy_worker = type(
+        "_DummyWorker",
+        (),
+        {"reward_loop_worker_handles": None, "distillation_enabled": False},
+    )()
+
+    internal_text = _to_internal(
+        output_prompt_ids=[101, 102],
+        output_response_ids=[11, 12],
+        output_response_mask=[1, 1],
+        metrics=AgentLoopMetrics(),
+        extra_fields={},
+        num_turns=2,
+        prompt_len=4,
+        response_len=4,
+    )
+    internal_vision = _to_internal(
+        output_prompt_ids=[101, 102],
+        output_response_ids=[21, 22],
+        output_response_mask=[1, 1],
+        metrics=AgentLoopMetrics(),
+        extra_fields={},
+        num_turns=2,
+        prompt_len=4,
+        response_len=4,
+    )
+    internal_vision.position_ids = internal_vision.position_ids.unsqueeze(1).expand(-1, 4, -1).clone()
+
+    merged = AgentLoopWorker._postprocess(dummy_worker, inputs=[internal_text, internal_vision])
+    assert merged.batch["position_ids"].shape == (2, 4, 8)
+    torch.testing.assert_close(merged.batch["position_ids"][0], internal_vision.position_ids[0])
+
+    text_chunk = AgentLoopWorker._postprocess(dummy_worker, inputs=[internal_text])
+    vision_chunk = AgentLoopWorker._postprocess(dummy_worker, inputs=[internal_vision])
+    AgentLoopManager._align_output_position_ids_for_concat([text_chunk, vision_chunk])
+    concatenated = DataProto.concat([text_chunk, vision_chunk])
+    assert concatenated.batch["position_ids"].shape == (2, 4, 8)
+
+
+def test_agent_loop_detects_hf_configs_requiring_multimodal_processor_on_cpu():
+    assert _hf_config_requires_multimodal_processor(SimpleNamespace(vision_config={}))
+    assert _hf_config_requires_multimodal_processor(SimpleNamespace(image_token_id=123))
+    assert not _hf_config_requires_multimodal_processor(SimpleNamespace(model_type="qwen3"))
+    assert not _hf_config_requires_multimodal_processor(None)
 
 
 @pytest.mark.asyncio
