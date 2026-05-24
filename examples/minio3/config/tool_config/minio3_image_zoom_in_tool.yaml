@@ -1,0 +1,30 @@
+tools:
+  - class_name: verl.tools.minio3_crop_tool.MiniO3CropTool
+    config:
+      type: native
+      use_relative_coordinates: true
+      coordinate_scale: 1000
+      resize: 1
+      min_crop_size: 28
+      max_aspect_ratio: 200
+    tool_schema:
+      type: function
+      function:
+        name: image_zoom_in_tool
+        description: Zoom into a specific rectangular region of an image and return the cropped zoom-in image.
+        parameters:
+          type: object
+          properties:
+            bbox_2d:
+              type: array
+              description: Bounding box [x1, y1, x2, y2] in relative coordinates from 0 to 1000.
+            label:
+              type: string
+              description: Name or short description of the object or region in the bounding box.
+            img_idx:
+              type: number
+              description: Index of the image to crop, starting from 0.
+          required:
+            - bbox_2d
+            - label
+            - img_idx

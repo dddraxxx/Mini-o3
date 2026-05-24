@@ -27,8 +27,9 @@ class MiniO3CropTool(BaseTool):
             function=OpenAIFunctionSchema(
                 name="tool_crop",
                 description=(
-                    "Crop a region from the original image or a previous observation image. "
-                    "Coordinates are relative by default, matching Mini-o3 grounding format."
+                    "Zoom into a specific rectangular region of the original image or a previous "
+                    "observation image and return the cropped zoom-in image. Coordinates are "
+                    "relative by default, matching Mini-o3 grounding format."
                 ),
                 parameters=OpenAIFunctionParametersSchema(
                     type="object",
@@ -54,7 +55,7 @@ class MiniO3CropTool(BaseTool):
             return ToolResponse(text="ERROR occurs during grounding. No image is available."), 0.0, {}
 
         try:
-            image_index = self._resolve_source(parameters.get("source", "original_image"), len(images))
+            image_index = self._resolve_image_index(parameters, len(images))
             image = images[image_index]
             if not isinstance(image, Image.Image):
                 raise TypeError(f"Expected PIL.Image.Image, got {type(image).__name__}")
@@ -76,6 +77,17 @@ class MiniO3CropTool(BaseTool):
             "minio3_crop/y1": bbox[3],
         }
         return ToolResponse(text="Zoom-in observation.", image=[crop]), 0.0, metrics
+
+    def _resolve_image_index(self, parameters: dict[str, Any], num_images: int) -> int:
+        if "img_idx" in parameters:
+            try:
+                image_index = int(float(parameters["img_idx"]))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"img_idx must be a number, got {parameters['img_idx']!r}") from exc
+            if image_index < 0 or image_index >= num_images:
+                raise ValueError(f"img_idx {image_index} is out of range for {num_images} image(s).")
+            return image_index
+        return self._resolve_source(parameters.get("source", "original_image"), num_images)
 
     @staticmethod
     def _resolve_source(source: Any, num_images: int) -> int:
@@ -99,7 +111,15 @@ class MiniO3CropTool(BaseTool):
         w, h = image_size
         coords = [float(v) for v in bbox]
         if self.config.get("use_relative_coordinates", True):
-            coords = [coords[0] * w, coords[1] * h, coords[2] * w, coords[3] * h]
+            coordinate_scale = float(self.config.get("coordinate_scale", 1.0))
+            if coordinate_scale <= 0:
+                raise ValueError(f"coordinate_scale must be positive, got {coordinate_scale}")
+            coords = [
+                coords[0] / coordinate_scale * w,
+                coords[1] / coordinate_scale * h,
+                coords[2] / coordinate_scale * w,
+                coords[3] / coordinate_scale * h,
+            ]
 
         x0, y0, x1, y1 = coords
         x0 = max(0, min(int(x0), w - 1))

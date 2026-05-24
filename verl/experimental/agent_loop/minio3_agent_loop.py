@@ -34,11 +34,17 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
     user observation so the next turn matches Mini-o3's training semantics.
     """
 
+    def _legacy_grounding_mode(self) -> bool:
+        return self.tool_parser_name == "minio3_grounding"
+
+    def _active_tool_schemas(self, agent_data: AgentData) -> list[dict[str, Any]]:
+        return getattr(agent_data, "_active_tool_schemas", self.tool_schemas)
+
     async def _handle_generating_state(
         self, agent_data: AgentData, sampling_params: dict[str, Any], ignore_termination: bool = False
     ) -> AgentState:
         turn_sampling_params = dict(sampling_params)
-        if self.tool_parser_name == "minio3_grounding":
+        if self._legacy_grounding_mode():
             turn_sampling_params.setdefault("stop", ["</grounding>"])
             turn_sampling_params.setdefault("include_stop_str_in_output", True)
 
@@ -135,9 +141,10 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
             f"minio3.pending.start request={agent_data.request_id[:8]} messages={len(agent_data.messages)} "
             f"images={len(agent_data.image_data or [])}"
         )
+        schemas = None if self._legacy_grounding_mode() else self._active_tool_schemas(agent_data)
         prompt_ids = await self.apply_chat_template(
             agent_data.messages,
-            tools=None,
+            tools=schemas,
             images=agent_data.image_data,
             videos=agent_data.video_data,
             audios=agent_data.audio_data,
@@ -151,6 +158,9 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
         return AgentState.GENERATING
 
     async def _handle_processing_tools_state(self, agent_data: AgentData) -> AgentState:
+        if not self._legacy_grounding_mode():
+            return await self._handle_official_processing_tools_state(agent_data)
+
         add_messages: list[dict[str, Any]] = []
         new_images_this_turn: list[Any] = []
 
@@ -212,6 +222,65 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
         _stage_log(
             f"minio3.tool.end request={agent_data.request_id[:8]} new_images={len(new_images_this_turn)} "
             f"obs_tokens={len(response_ids)} dt={time.monotonic() - t0:.3f}s"
+        )
+        return AgentState.GENERATING
+
+    async def _handle_official_processing_tools_state(self, agent_data: AgentData) -> AgentState:
+        add_messages: list[dict[str, Any]] = []
+        new_images_this_turn: list[Any] = []
+
+        t0 = time.monotonic()
+        _stage_log(f"minio3.official_tool.start request={agent_data.request_id[:8]} calls={len(agent_data.tool_calls)}")
+        tasks = []
+        tool_call_names = []
+        for tool_call in agent_data.tool_calls[: self.max_parallel_calls]:
+            tasks.append(self._call_tool(tool_call, agent_data.tools_kwargs, agent_data))
+            tool_call_names.append(tool_call.name)
+
+        with simple_timer("tool_calls", agent_data.metrics):
+            responses = await asyncio.gather(*tasks)
+
+        for tool_response, tool_reward, _ in responses:
+            if tool_response.image:
+                content: list[dict[str, Any]] = [{"type": "image"}]
+                if tool_response.text:
+                    content.append({"type": "text", "text": tool_response.text})
+                add_messages.append({"role": "tool", "content": content})
+                new_images_this_turn.extend([img for img in tool_response.image if img is not None])
+            else:
+                error_text = tool_response.text or "ERROR occurs during tool execution."
+                add_messages.append({"role": "tool", "content": error_text})
+
+            if tool_reward is not None:
+                agent_data.tool_rewards.append(tool_reward)
+
+        agent_data.messages.extend(add_messages)
+        response_ids = await self._encode_tool_response_messages(
+            add_messages,
+            new_images_this_turn,
+            tool_call_names=tool_call_names,
+        )
+
+        if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
+            self._mark_exceed(agent_data, "official_tool_response_would_exceed_response_length")
+            return AgentState.TERMINATED
+
+        if new_images_this_turn:
+            if agent_data.image_data is None:
+                agent_data.image_data = []
+            elif not isinstance(agent_data.image_data, list):
+                agent_data.image_data = [agent_data.image_data]
+            agent_data.image_data.extend(new_images_this_turn)
+
+        agent_data.prompt_ids += response_ids
+        agent_data.response_mask += [0] * len(response_ids)
+        if agent_data.response_logprobs:
+            agent_data.response_logprobs += [0.0] * len(response_ids)
+        agent_data.user_turns += 1
+        _stage_log(
+            f"minio3.official_tool.end request={agent_data.request_id[:8]} "
+            f"new_images={len(new_images_this_turn)} obs_tokens={len(response_ids)} "
+            f"dt={time.monotonic() - t0:.3f}s"
         )
         return AgentState.GENERATING
 

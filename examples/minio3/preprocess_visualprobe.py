@@ -12,6 +12,10 @@ from typing import Any
 import datasets
 
 
+LEGACY_GROUNDING_PROMPT_SUITE = "qwen35_minio3_legacy_grounding"
+OFFICIAL_ZOOM_PROMPT_SUITE = "qwen35_official_zoom_tool"
+PROMPT_SUITES = {LEGACY_GROUNDING_PROMPT_SUITE, OFFICIAL_ZOOM_PROMPT_SUITE}
+
 TOOL_CROP_SYSTEM_PROMPT = (
     "You are a helpful assistant. Answer the user's question based on the image provided. "
     "Output your thinking process within the <think> and </think> tags. Whenever you find "
@@ -22,6 +26,31 @@ TOOL_CROP_SYSTEM_PROMPT = (
     "and 'source' refers to the image that you zoom in and could be either 'original_image' or "
     "'observation_i'. Once the final answer is confirmed, put it within <answer> and </answer>."
 )
+
+OFFICIAL_ZOOM_SYSTEM_PROMPT = (
+    "You are a visual research assistant. Answer the user's image question by examining the image "
+    "carefully and using the available zoom tool when visual details are unclear.\n\n"
+    "For each question, follow this loop:\n"
+    "1. First inspect the image with the user's question in mind.\n"
+    "2. State what is visible and what needs closer inspection.\n"
+    "3. If needed, call the zoom tool on a precise region.\n"
+    "4. Review the zoom observation before deciding whether another zoom is needed.\n"
+    "5. When there is enough evidence, give the final answer inside <answer> and </answer>."
+)
+
+
+def _system_prompt_for_suite(tool_prompt_suite: str) -> str:
+    if tool_prompt_suite == LEGACY_GROUNDING_PROMPT_SUITE:
+        return TOOL_CROP_SYSTEM_PROMPT
+    if tool_prompt_suite == OFFICIAL_ZOOM_PROMPT_SUITE:
+        return OFFICIAL_ZOOM_SYSTEM_PROMPT
+    raise ValueError(f"Unsupported tool prompt suite: {tool_prompt_suite!r}")
+
+
+def _default_agent_name(tool_prompt_suite: str) -> str:
+    if tool_prompt_suite == OFFICIAL_ZOOM_PROMPT_SUITE:
+        return "tool_agent"
+    return "mini_o3_tool_agent"
 
 
 def _load_json(path: str) -> list[dict[str, Any]]:
@@ -52,7 +81,13 @@ def _convert_row(
     image_root: str | None,
     min_pixels: int,
     max_pixels: int,
+    tool_prompt_suite: str = LEGACY_GROUNDING_PROMPT_SUITE,
+    official_tool_name: str = "tool_crop",
+    agent_name: str | None = None,
 ) -> dict[str, Any]:
+    if tool_prompt_suite not in PROMPT_SUITES:
+        raise ValueError(f"tool_prompt_suite must be one of {sorted(PROMPT_SUITES)}, got {tool_prompt_suite!r}")
+
     images = row.get("images") or []
     if not isinstance(images, list):
         raise ValueError(f"row {idx}: images must be a list")
@@ -65,17 +100,19 @@ def _convert_row(
     data_source = row.get("data_source") or f"minio3_{split}"
     image_paths = [_resolve_image_path(image_root, path) for path in images]
     image_payload = [{"image": path, "min_pixels": min_pixels, "max_pixels": max_pixels} for path in image_paths]
+    selected_tool = official_tool_name if tool_prompt_suite == OFFICIAL_ZOOM_PROMPT_SUITE else "tool_crop"
+    selected_agent = agent_name or _default_agent_name(tool_prompt_suite)
 
     return {
         "data_source": data_source,
         "prompt": [
-            {"role": "system", "content": TOOL_CROP_SYSTEM_PROMPT},
+            {"role": "system", "content": _system_prompt_for_suite(tool_prompt_suite)},
             {"role": "user", "content": _build_prompt(problem, len(images))},
         ],
         "images": image_payload,
         "ability": "vision_qa",
         "reward_model": {"style": "rule", "ground_truth": answer},
-        "agent_name": "mini_o3_tool_agent",
+        "agent_name": selected_agent,
         "extra_info": {
             "split": split,
             "index": row.get("doc_id", idx),
@@ -83,7 +120,8 @@ def _convert_row(
             "image_paths": image_paths,
             "answer": answer,
             "question": problem,
-            "tool_selection": ["tool_crop"],
+            "tool_prompt_suite": tool_prompt_suite,
+            "tool_selection": [selected_tool],
             "acc_reward_weight": 1.0,
             "format_reward_weight": 0.0,
             "tool_call_penalty": 0.0,
@@ -103,6 +141,9 @@ def _write_split(
     limit: int | None,
     min_pixels: int,
     max_pixels: int,
+    tool_prompt_suite: str,
+    official_tool_name: str,
+    agent_name: str | None,
 ) -> None:
     rows: list[dict[str, Any]] = []
     for input_json in input_jsons:
@@ -110,7 +151,17 @@ def _write_split(
     if limit is not None:
         rows = rows[:limit]
     converted = [
-        _convert_row(row, idx, split, image_root, min_pixels=min_pixels, max_pixels=max_pixels)
+        _convert_row(
+            row,
+            idx,
+            split,
+            image_root,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+            tool_prompt_suite=tool_prompt_suite,
+            official_tool_name=official_tool_name,
+            agent_name=agent_name,
+        )
         for idx, row in enumerate(rows)
     ]
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -128,6 +179,13 @@ def main() -> None:
     parser.add_argument("--val-limit", type=int, default=None)
     parser.add_argument("--min-pixels", type=int, default=40000)
     parser.add_argument("--max-pixels", type=int, default=1000000)
+    parser.add_argument(
+        "--tool-prompt-suite",
+        choices=sorted(PROMPT_SUITES),
+        default=os.environ.get("MINIO3_TOOL_PROMPT_SUITE", LEGACY_GROUNDING_PROMPT_SUITE),
+    )
+    parser.add_argument("--official-tool-name", default=os.environ.get("MINIO3_OFFICIAL_TOOL_NAME", "tool_crop"))
+    parser.add_argument("--agent-name", default=os.environ.get("MINIO3_AGENT_LOOP") or None)
     args = parser.parse_args()
     train_jsons = _flatten_paths(args.train_json)
     val_jsons = _flatten_paths(args.val_json)
@@ -140,6 +198,9 @@ def main() -> None:
         args.train_limit,
         args.min_pixels,
         args.max_pixels,
+        args.tool_prompt_suite,
+        args.official_tool_name,
+        args.agent_name,
     )
     _write_split(
         val_jsons,
@@ -149,6 +210,9 @@ def main() -> None:
         args.val_limit,
         args.min_pixels,
         args.max_pixels,
+        args.tool_prompt_suite,
+        args.official_tool_name,
+        args.agent_name,
     )
 
 

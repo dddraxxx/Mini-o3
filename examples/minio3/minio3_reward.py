@@ -10,6 +10,7 @@ from typing import Any
 
 ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 GROUNDING_RE = re.compile(r"<grounding>(.*?)</grounding>", re.DOTALL)
+TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 SYSTEM_PROMPT = "Judge answer equivalence. Reply only Yes or No."
 QUERY_PROMPT = """Q: {question}
 GT: {ground_truth}
@@ -59,8 +60,14 @@ def _format_score(response: str) -> float:
     has_answer = _extract_answer(response) is not None
     grounding_open = response.count("<grounding>")
     grounding_close = response.count("</grounding>")
+    tool_call_open = response.count("<tool_call>")
+    tool_call_close = response.count("</tool_call>")
     think_balanced = response.count("<think>") == response.count("</think>")
-    return float(has_answer and grounding_open == grounding_close and think_balanced)
+    return float(has_answer and grounding_open == grounding_close and tool_call_open == tool_call_close and think_balanced)
+
+
+def _tool_call_count(response: str) -> int:
+    return len(GROUNDING_RE.findall(response or "")) + len(TOOL_CALL_RE.findall(response or ""))
 
 
 def _truthy(value: Any) -> bool:
@@ -216,7 +223,7 @@ def compute_score(
     prediction = _extract_answer(solution_str)
     rule_acc = 0.0 if prediction is None else _matches_choice_or_exact(prediction, ground_truth)
     fmt = _format_score(solution_str)
-    tool_call_count = len(GROUNDING_RE.findall(solution_str or ""))
+    tool_call_count = _tool_call_count(solution_str or "")
 
     acc_reward_weight = float(extra_info.get("acc_reward_weight", 1.0))
     format_reward_weight = float(extra_info.get("format_reward_weight", 0.0))

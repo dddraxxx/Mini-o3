@@ -6,12 +6,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import datasets
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from examples.minio3.preprocess_visualprobe import _convert_row
+from examples.minio3.preprocess_visualprobe import LEGACY_GROUNDING_PROMPT_SUITE
 
 
 SPLITS = (
@@ -60,9 +66,22 @@ def _write_parquet(
     image_root: str,
     min_pixels: int,
     max_pixels: int,
+    tool_prompt_suite: str,
+    official_tool_name: str,
+    agent_name: str | None,
 ) -> None:
     converted = [
-        _convert_row(row, idx, split, image_root, min_pixels=min_pixels, max_pixels=max_pixels)
+        _convert_row(
+            row,
+            idx,
+            split,
+            image_root,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+            tool_prompt_suite=tool_prompt_suite,
+            official_tool_name=official_tool_name,
+            agent_name=agent_name,
+        )
         for idx, row in enumerate(rows)
     ]
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +98,9 @@ def main() -> None:
     parser.add_argument("--train-case-count", type=int, default=1)
     parser.add_argument("--min-pixels", type=int, default=40000)
     parser.add_argument("--max-pixels", type=int, default=2000000)
+    parser.add_argument("--tool-prompt-suite", default=os.environ.get("MINIO3_TOOL_PROMPT_SUITE", LEGACY_GROUNDING_PROMPT_SUITE))
+    parser.add_argument("--official-tool-name", default=os.environ.get("MINIO3_OFFICIAL_TOOL_NAME", "tool_crop"))
+    parser.add_argument("--agent-name", default=os.environ.get("MINIO3_AGENT_LOOP") or None)
     args = parser.parse_args()
 
     dataset_root = Path(args.dataset_root)
@@ -97,6 +119,9 @@ def main() -> None:
         image_root,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
+        tool_prompt_suite=args.tool_prompt_suite,
+        official_tool_name=args.official_tool_name,
+        agent_name=args.agent_name,
     )
     _write_parquet(
         val_rows,
@@ -105,6 +130,9 @@ def main() -> None:
         image_root,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
+        tool_prompt_suite=args.tool_prompt_suite,
+        official_tool_name=args.official_tool_name,
+        agent_name=args.agent_name,
     )
 
 

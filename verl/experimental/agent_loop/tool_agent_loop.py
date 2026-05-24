@@ -35,6 +35,7 @@ from verl.tools.function_tool import FunctionTool, normalize_function_tool_retur
 from verl.tools.schemas import ToolResponse
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
+from verl.utils.tokenizer import build_multimodal_processor_inputs, normalize_token_ids
 from verl.workers.rollout.replica import TokenOutput
 
 logger = logging.getLogger(__file__)
@@ -373,23 +374,11 @@ class ToolAgentLoop(AgentLoopBase):
 
         agent_data.messages.extend(add_messages)
 
-        if self.tool_parser_name == "gpt-oss":
-            logger.info("manually format tool responses for gpt-oss")
-            tool_response_text = build_gpt_oss_tool_response_text(add_messages, tool_call_names)
-            response_ids = await self.loop.run_in_executor(
-                None, lambda: self.tokenizer.encode(tool_response_text, add_special_tokens=False)
-            )
-        else:
-            # Note that we have to pass None to the images and videos if there are no new images / videos
-            # to stay compatible with downstream image processing logic!
-            images = new_images_this_turn if new_images_this_turn else None
-            videos = None
-            response_ids = await self.apply_chat_template(
-                add_messages,
-                images=images,
-                videos=videos,
-                remove_system_prompt=True,
-            )
+        response_ids = await self._encode_tool_response_messages(
+            add_messages,
+            new_images_this_turn,
+            tool_call_names=tool_call_names,
+        )
 
         if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
             return AgentState.TERMINATED
@@ -413,6 +402,90 @@ class ToolAgentLoop(AgentLoopBase):
             f"obs_tokens={len(response_ids)} dt={time.monotonic() - t0:.3f}s"
         )
         return AgentState.GENERATING
+
+    async def _encode_tool_response_messages(
+        self,
+        add_messages: list[dict[str, Any]],
+        new_images_this_turn: list[Any],
+        *,
+        tool_call_names: list[str],
+    ) -> list[int]:
+        if self.tool_parser_name == "gpt-oss":
+            logger.info("manually format tool responses for gpt-oss")
+            tool_response_text = build_gpt_oss_tool_response_text(add_messages, tool_call_names)
+            return await self.loop.run_in_executor(
+                None, lambda: self.tokenizer.encode(tool_response_text, add_special_tokens=False)
+            )
+
+        if self.tool_parser_name == "qwen3_coder":
+            raw_prompt = self._build_qwen3_tool_response_text(
+                add_messages,
+                enable_thinking=self.apply_chat_template_kwargs.get("enable_thinking"),
+            )
+            if self.processor is not None:
+                model_inputs = await self.loop.run_in_executor(
+                    None,
+                    lambda: build_multimodal_processor_inputs(
+                        self.processor,
+                        text=[raw_prompt],
+                        images=new_images_this_turn if new_images_this_turn else None,
+                        videos=None,
+                        audio=None,
+                        mm_processor_kwargs=self._get_mm_processor_kwargs(None),
+                    ),
+                )
+                return normalize_token_ids(model_inputs.pop("input_ids"))
+            return await self.loop.run_in_executor(
+                None, lambda: self.tokenizer.encode(raw_prompt, add_special_tokens=False)
+            )
+
+        # Note that we have to pass None to the images and videos if there are no new images / videos
+        # to stay compatible with downstream image processing logic.
+        return await self.apply_chat_template(
+            add_messages,
+            images=new_images_this_turn if new_images_this_turn else None,
+            videos=None,
+            remove_system_prompt=True,
+        )
+
+    @staticmethod
+    def _render_qwen3_tool_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if content is None:
+            return ""
+        if isinstance(content, list):
+            rendered = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type == "image" or "image" in item or "image_url" in item:
+                    rendered.append("<|vision_start|><|image_pad|><|vision_end|>")
+                elif item_type == "video" or "video" in item:
+                    rendered.append("<|vision_start|><|video_pad|><|vision_end|>")
+                elif "text" in item:
+                    rendered.append(str(item["text"]))
+            return "".join(rendered)
+        return str(content)
+
+    @classmethod
+    def _build_qwen3_tool_response_text(
+        cls,
+        add_messages: list[dict[str, Any]],
+        *,
+        enable_thinking: Any = None,
+    ) -> str:
+        parts = ["<|im_start|>user"]
+        for message in add_messages:
+            parts.append("\n<tool_response>\n")
+            parts.append(cls._render_qwen3_tool_content(message.get("content")))
+            parts.append("\n</tool_response>")
+        if enable_thinking is False:
+            parts.append("<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
+        else:
+            parts.append("<|im_end|>\n<|im_start|>assistant\n<think>\n")
+        return "".join(parts)
 
     async def _call_tool(
         self, tool_call: FunctionCall, tools_kwargs: dict[str, Any], agent_data: AgentData

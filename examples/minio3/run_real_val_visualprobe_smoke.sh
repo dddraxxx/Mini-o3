@@ -42,7 +42,10 @@ fi
   --case-count "$SMOKE_CASES" \
   --train-case-count "$SMOKE_TRAIN_CASES" \
   --min-pixels "${MIN_PIXELS:-40000}" \
-  --max-pixels "${MAX_PIXELS:-2000000}"
+  --max-pixels "${MAX_PIXELS:-2000000}" \
+  --tool-prompt-suite "${MINIO3_TOOL_PROMPT_SUITE:-qwen35_minio3_legacy_grounding}" \
+  --official-tool-name "${MINIO3_OFFICIAL_TOOL_NAME:-tool_crop}" \
+  --agent-name "${MINIO3_AGENT_LOOP:-${ROLLOUT_AGENT_LOOP:-}}"
 
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7} \
 MODEL_PATH=${MODEL_PATH} \
@@ -98,6 +101,9 @@ VAL_ONLY=True \
 NGPUS_PER_NODE=${NGPUS_PER_NODE} \
 PROJECT_NAME=${PROJECT_NAME:-Mini-o3-val} \
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-$RUN_ID} \
+MINIO3_OFFICIAL_TOOL_NAME=${MINIO3_OFFICIAL_TOOL_NAME:-tool_crop} \
+ROLLOUT_MULTI_TURN_FORMAT=${ROLLOUT_MULTI_TURN_FORMAT:-minio3_grounding} \
+ROLLOUT_AGENT_LOOP=${ROLLOUT_AGENT_LOOP:-${MINIO3_AGENT_LOOP:-mini_o3_tool_agent}} \
 bash "$PROJECT_DIR/examples/minio3/run_qwen3_vl_8b_crop_lora_fsdp.sh" \
   actor_rollout_ref.model.trust_remote_code=True \
   trainer.val_before_train=True \

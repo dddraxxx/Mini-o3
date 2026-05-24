@@ -72,6 +72,8 @@ MAX_ASSISTANT_TURNS=${MAX_ASSISTANT_TURNS:-6}
 MAX_USER_TURNS=${MAX_USER_TURNS:-6}
 VAL_MAX_ASSISTANT_TURNS=${VAL_MAX_ASSISTANT_TURNS:-12}
 VAL_MAX_USER_TURNS=${VAL_MAX_USER_TURNS:-12}
+ROLLOUT_MULTI_TURN_FORMAT=${ROLLOUT_MULTI_TURN_FORMAT:-minio3_grounding}
+ROLLOUT_AGENT_LOOP=${ROLLOUT_AGENT_LOOP:-mini_o3_tool_agent}
 VAL_N=${VAL_N:-1}
 VAL_DO_SAMPLE=${VAL_DO_SAMPLE:-False}
 VAL_TEMPERATURE=${VAL_TEMPERATURE:-0}
@@ -110,7 +112,12 @@ RAY_INCLUDE_DASHBOARD=${RAY_INCLUDE_DASHBOARD:-False}
 
 PROJECT_NAME=${PROJECT_NAME:-minio3_official_verl}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-qwen3_vl_8b_crop_lora_$(date +%Y%m%d_%H%M)}
-TOOL_CONFIG_PATH=${TOOL_CONFIG_PATH:-$PROJECT_DIR/examples/minio3/config/tool_config/minio3_crop_tool.yaml}
+MINIO3_OFFICIAL_TOOL_NAME=${MINIO3_OFFICIAL_TOOL_NAME:-tool_crop}
+DEFAULT_TOOL_CONFIG_PATH="$PROJECT_DIR/examples/minio3/config/tool_config/minio3_crop_tool.yaml"
+if [[ "$MINIO3_OFFICIAL_TOOL_NAME" == "image_zoom_in_tool" ]]; then
+    DEFAULT_TOOL_CONFIG_PATH="$PROJECT_DIR/examples/minio3/config/tool_config/minio3_image_zoom_in_tool.yaml"
+fi
+TOOL_CONFIG_PATH=${TOOL_CONFIG_PATH:-$DEFAULT_TOOL_CONFIG_PATH}
 REWARD_FN_PATH=${REWARD_FN_PATH:-$PROJECT_DIR/examples/minio3/minio3_reward.py}
 
 if [[ -n "${RUN_DIR}" && -z "${PROMPT_ADMISSION_STATE_PATH}" ]]; then
@@ -192,12 +199,12 @@ ROLLOUT=(
     actor_rollout_ref.rollout.layered_summon=True
     actor_rollout_ref.rollout.multi_turn.enable=True
     actor_rollout_ref.rollout.multi_turn.tool_config_path=${TOOL_CONFIG_PATH}
-    actor_rollout_ref.rollout.multi_turn.format=minio3_grounding
+    actor_rollout_ref.rollout.multi_turn.format=${ROLLOUT_MULTI_TURN_FORMAT}
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=${MAX_ASSISTANT_TURNS}
     actor_rollout_ref.rollout.multi_turn.max_user_turns=${MAX_USER_TURNS}
     actor_rollout_ref.rollout.multi_turn.max_parallel_calls=1
     actor_rollout_ref.rollout.multi_turn.tokenization_sanity_check_mode=ignore_strippable
-    actor_rollout_ref.rollout.agent.default_agent_loop=mini_o3_tool_agent
+    actor_rollout_ref.rollout.agent.default_agent_loop=${ROLLOUT_AGENT_LOOP}
     actor_rollout_ref.rollout.agent.num_workers=${AGENT_NUM_WORKERS}
     actor_rollout_ref.rollout.val_kwargs.n=${VAL_N}
     actor_rollout_ref.rollout.val_kwargs.do_sample=${VAL_DO_SAMPLE}

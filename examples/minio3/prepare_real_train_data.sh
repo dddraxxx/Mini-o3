@@ -75,7 +75,10 @@ mkdir -p "$DATA_DIR"
     --image-root "$IMAGE_ROOT" \
     --local-save-dir "$DATA_DIR" \
     --min-pixels "${MIN_PIXELS:-40000}" \
-    --max-pixels "${MAX_PIXELS:-2000000}"
+    --max-pixels "${MAX_PIXELS:-2000000}" \
+    --tool-prompt-suite "${MINIO3_TOOL_PROMPT_SUITE:-qwen35_minio3_legacy_grounding}" \
+    --official-tool-name "${MINIO3_OFFICIAL_TOOL_NAME:-tool_crop}" \
+    --agent-name "${MINIO3_AGENT_LOOP:-${ROLLOUT_AGENT_LOOP:-}}"
 
 echo "TRAIN_FILE=$DATA_DIR/train.parquet"
 echo "VAL_FILE=$DATA_DIR/val.parquet"
