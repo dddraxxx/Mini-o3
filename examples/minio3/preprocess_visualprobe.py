@@ -14,7 +14,12 @@ import datasets
 
 LEGACY_GROUNDING_PROMPT_SUITE = "qwen35_minio3_legacy_grounding"
 OFFICIAL_ZOOM_PROMPT_SUITE = "qwen35_official_zoom_tool"
-PROMPT_SUITES = {LEGACY_GROUNDING_PROMPT_SUITE, OFFICIAL_ZOOM_PROMPT_SUITE}
+OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE = "qwen35_official_zoom_tool_plain_question"
+PROMPT_SUITES = {
+    LEGACY_GROUNDING_PROMPT_SUITE,
+    OFFICIAL_ZOOM_PROMPT_SUITE,
+    OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE,
+}
 
 TOOL_CROP_SYSTEM_PROMPT = (
     "You are a helpful assistant. Answer the user's question based on the image provided. "
@@ -38,17 +43,33 @@ OFFICIAL_ZOOM_SYSTEM_PROMPT = (
     "5. When there is enough evidence, give the final answer inside <answer> and </answer>."
 )
 
+OFFICIAL_ZOOM_PLAIN_QUESTION_SYSTEM_PROMPT = (
+    "You are a visual research assistant. Answer the user's image question by examining the image "
+    "carefully and using the available zoom tool when visual details are unclear.\n\n"
+    "For each question, follow this loop:\n"
+    "1. First inspect the image with the user's question in mind.\n"
+    "2. State what is visible and what needs closer inspection.\n"
+    "3. If needed, call the zoom tool on a precise region.\n"
+    "4. Review the zoom observation before deciding whether another zoom is needed."
+)
+
+
+def _is_official_zoom_suite(tool_prompt_suite: str) -> bool:
+    return tool_prompt_suite in {OFFICIAL_ZOOM_PROMPT_SUITE, OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE}
+
 
 def _system_prompt_for_suite(tool_prompt_suite: str) -> str:
     if tool_prompt_suite == LEGACY_GROUNDING_PROMPT_SUITE:
         return TOOL_CROP_SYSTEM_PROMPT
     if tool_prompt_suite == OFFICIAL_ZOOM_PROMPT_SUITE:
         return OFFICIAL_ZOOM_SYSTEM_PROMPT
+    if tool_prompt_suite == OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE:
+        return OFFICIAL_ZOOM_PLAIN_QUESTION_SYSTEM_PROMPT
     raise ValueError(f"Unsupported tool prompt suite: {tool_prompt_suite!r}")
 
 
 def _default_agent_name(tool_prompt_suite: str) -> str:
-    if tool_prompt_suite == OFFICIAL_ZOOM_PROMPT_SUITE:
+    if _is_official_zoom_suite(tool_prompt_suite):
         return "tool_agent"
     return "mini_o3_tool_agent"
 
@@ -100,7 +121,7 @@ def _convert_row(
     data_source = row.get("data_source") or f"minio3_{split}"
     image_paths = [_resolve_image_path(image_root, path) for path in images]
     image_payload = [{"image": path, "min_pixels": min_pixels, "max_pixels": max_pixels} for path in image_paths]
-    selected_tool = official_tool_name if tool_prompt_suite == OFFICIAL_ZOOM_PROMPT_SUITE else "tool_crop"
+    selected_tool = official_tool_name if _is_official_zoom_suite(tool_prompt_suite) else "tool_crop"
     selected_agent = agent_name or _default_agent_name(tool_prompt_suite)
 
     return {

@@ -101,12 +101,12 @@ bash examples/minio3/run_real_val_visualprobe_smoke.sh
   likely use `VAL_DO_SAMPLE=True`, `VAL_TEMPERATURE=1.0`, `VAL_TOP_P=1.0`,
   `VAL_TOP_K=-1`.
 - H200 rollout throughput parameters are intentionally aggressive smoke
-  candidates, not settled formal defaults:
+  candidates. The formal H200 full-val profile is listed separately below:
   `ROLLOUT_DP=8`, `AGENT_NUM_WORKERS=64`,
   `MAX_NUM_BATCHED_TOKENS=65536`, `MAX_NUM_SEQS=256`.
-- `RAY_NUM_CPUS=96` is needed on the local H200 node. The 8 rollout/FSDP
-  placement-group bundles reserve at least 24 CPUs, and the 64 AgentLoop
-  workers need extra scheduler room.
+- `RAY_NUM_CPUS=96` is enough for the current H200 smoke profile. The 8
+  rollout/FSDP placement-group bundles reserve at least 24 CPUs, and the 64
+  AgentLoop workers need extra scheduler room.
 - If the smoke fails before generation, first check image-token prompt length,
   model processor/chat template compatibility, and vLLM max model length.
 - If the smoke runs but GPU util is low, check per-turn tool/image
@@ -200,10 +200,55 @@ fails before Ray starts.
   back to `yaml.safe_load` for this common `{bbox_2d: [...], source:
   original_image}` format.
 
-## Formal H200 Val Batch
+2026-05-25 30-case Qwen3.5 official-tool empty-reward smoke:
 
-For formal validation, keep the total number of concurrent val trajectories in
-the same range as train rollout:
+- First attempted H200-wide scheduler profile:
+  `RAY_NUM_CPUS=128`, `AGENT_NUM_WORKERS=128`.
+- Attempted run id:
+  `visualprobe_val_smoke30_qwen35_9b_official_tool_empty_h200_20260525_012232`.
+- Attempted run log:
+  `logs/visualprobe_val_smoke30_qwen35_9b_official_tool_empty_h200_20260525_012232.log`.
+- This attempt reached local Ray startup, but never reached `TaskRunner`.
+  `ray status` showed 0 CPU / 0 GPU usage and raylet logged many worker
+  registration timeouts from prestarting 128 Python workers. Treat `128/128`
+  as not yet validated until Ray worker prestart/concurrency is tuned.
+- Successful rerun id:
+  `visualprobe_val_smoke30_qwen35_9b_official_tool_empty_cpu96_20260525_012811`.
+- Successful rerun log:
+  `logs/visualprobe_val_smoke30_qwen35_9b_official_tool_empty_cpu96_20260525_012811.log`.
+- Successful rerun dir:
+  `save/visualprobe_val_smoke30_qwen35_9b_official_tool_empty_cpu96_20260525_012811`.
+- Overrides: `SMOKE_CASES=30`, `SMOKE_TRAIN_CASES=8`,
+  `VAL_BATCH_SIZE=30`, `VAL_N=1`, `VAL_DO_SAMPLE=True`,
+  `VAL_TEMPERATURE=1.0`, `RAY_NUM_CPUS=96`, `AGENT_NUM_WORKERS=64`,
+  `MINIO3_TOOL_PROMPT_SUITE=qwen35_official_zoom_tool`,
+  `MINIO3_OFFICIAL_TOOL_NAME=image_zoom_in_tool`,
+  `ROLLOUT_MULTI_TURN_FORMAT=qwen3_coder`, empty reward.
+- Confirmed: prompt contains Qwen3.5 `# Tools` block and
+  `image_zoom_in_tool` schema; generated calls use official `<tool_call>`
+  syntax; dumped validation JSONL has 60 `<tool_call>` blocks, 60
+  `<tool_response>` blocks, and 0 legacy `<grounding>` blocks across 30 rows.
+- Final status: wrapper exits 0 and writes
+  `validation_generations/0.jsonl`, `train_step_metrics.jsonl`, and
+  `perf_debug_summary.json`. vLLM logged `EngineCore_DP0 died unexpectedly`
+  after validation generations and metrics were already dumped.
+- Split coverage: 10 Easy, 10 Medium, 10 Hard.
+- Empty reward metrics are expected zero. Tool-call means from trainer metrics:
+  Easy 1.9, Medium 2.2, Hard 1.9. Number of turns: min 4, max 14, mean 6.0.
+- Format issue from output inspection: only 12 / 30 rows include final
+  `<answer>...</answer>` tags, despite the prompt asking for them. Manual rough
+  read of final answers was about 17 / 30 correct overall: Easy 9 / 10,
+  Medium 4 / 10, Hard 4 / 10. This is a spot check, not a reward score.
+- Prompt variant for relaxed/LLM-judge eval:
+  `MINIO3_TOOL_PROMPT_SUITE=qwen35_official_zoom_tool_plain_question` keeps the
+  official `image_zoom_in_tool` path but removes the `<answer>...</answer>`
+  instruction. The user prompt remains just image token(s) followed by the raw
+  question.
+
+## Formal Val Profiles
+
+For formal validation, keep the total number of val trajectories in the same
+range as train rollout:
 
 ```text
 train trajectory count = TRAIN_BATCH_SIZE * ROLLOUT_N = 64 * 8 = 512
@@ -211,12 +256,34 @@ val trajectory count = VAL_BATCH_SIZE * VAL_N = 512 * 1 = 512
 ```
 
 The current val path does not fan out with train `ROLLOUT_N`; it repeats with
-`VAL_N` and then pads the validation batch to `AGENT_NUM_WORKERS`. With
-`AGENT_NUM_WORKERS=64`, `VAL_BATCH_SIZE=512` and `VAL_N=1`, the batch remains
-512 trajectories after padding, gives 8 val trajectories per agent-loop worker,
-and gives about 64 concurrent requests per vLLM DP replica when `ROLLOUT_DP=8`.
-This is below the H200 script's `MAX_NUM_SEQS=256` and avoids the padding waste
-of small val batches.
+`VAL_N` and then pads the validation batch to `AGENT_NUM_WORKERS`.
+
+H200 formal full-val profile:
+
+```bash
+RAY_NUM_CPUS=128
+AGENT_NUM_WORKERS=128
+VAL_BATCH_SIZE=512
+VAL_N=1
+```
+
+With `AGENT_NUM_WORKERS=128`, `VAL_BATCH_SIZE=512`, and `VAL_N=1`, the batch
+remains 512 trajectories after padding and gives 4 val trajectories per
+agent-loop worker. On the local 8x H200 node, this keeps the total eval size
+aligned with train rollout while using a wider CPU/Ray scheduler budget. The
+request burst is still below the H200 script's `MAX_NUM_SEQS=256`.
+
+A100 full-val profile:
+
+```bash
+RAY_NUM_CPUS=96
+AGENT_NUM_WORKERS=64
+VAL_BATCH_SIZE=512
+VAL_N=1
+```
+
+This keeps the same `VAL_BATCH_SIZE * VAL_N = 512` eval size, but uses a
+narrower agent/Ray profile for A100-class runs.
 
 ## Official Qwen3.5 Env Target
 

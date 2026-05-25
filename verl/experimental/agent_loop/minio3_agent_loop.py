@@ -166,17 +166,19 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
 
         t0 = time.monotonic()
         _stage_log(f"minio3.tool.start request={agent_data.request_id[:8]} calls={len(agent_data.tool_calls)}")
+        executed_tool_calls = agent_data.tool_calls[: self.max_parallel_calls]
         tasks = []
-        for tool_call in agent_data.tool_calls[: self.max_parallel_calls]:
+        for tool_call in executed_tool_calls:
             tasks.append(self._call_tool(tool_call, agent_data.tools_kwargs, agent_data))
 
         with simple_timer("tool_calls", agent_data.metrics):
             responses = await asyncio.gather(*tasks)
 
-        for tool_response, tool_reward, _ in responses:
+        for tool_call, (tool_response, tool_reward, tool_metrics) in zip(executed_tool_calls, responses, strict=True):
+            self._record_tool_interaction(agent_data, tool_call, tool_response, tool_reward, tool_metrics)
             if tool_response.image:
                 observation_id = len(agent_data.image_data or []) + len(new_images_this_turn)
-                text = self._build_observation_text(agent_data.assistant_turns, observation_id)
+                text = self._build_legacy_grounding_observation_text(agent_data.assistant_turns, observation_id)
                 add_messages.append({"role": "user", "content": [{"type": "text", "text": text}, {"type": "image"}]})
                 new_images_this_turn.extend([img for img in tool_response.image if img is not None])
             else:
@@ -231,16 +233,18 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
 
         t0 = time.monotonic()
         _stage_log(f"minio3.official_tool.start request={agent_data.request_id[:8]} calls={len(agent_data.tool_calls)}")
+        executed_tool_calls = agent_data.tool_calls[: self.max_parallel_calls]
         tasks = []
         tool_call_names = []
-        for tool_call in agent_data.tool_calls[: self.max_parallel_calls]:
+        for tool_call in executed_tool_calls:
             tasks.append(self._call_tool(tool_call, agent_data.tools_kwargs, agent_data))
             tool_call_names.append(tool_call.name)
 
         with simple_timer("tool_calls", agent_data.metrics):
             responses = await asyncio.gather(*tasks)
 
-        for tool_response, tool_reward, _ in responses:
+        for tool_call, (tool_response, tool_reward, tool_metrics) in zip(executed_tool_calls, responses, strict=True):
+            self._record_tool_interaction(agent_data, tool_call, tool_response, tool_reward, tool_metrics)
             if tool_response.image:
                 content: list[dict[str, Any]] = [{"type": "image"}]
                 if tool_response.text:
@@ -285,7 +289,7 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
         return AgentState.GENERATING
 
     @staticmethod
-    def _build_observation_text(action_turn: int, observation_id: int) -> str:
+    def _build_legacy_grounding_observation_text(action_turn: int, observation_id: int) -> str:
         return (
             f"After the above Action {action_turn}, here is the zoom-in image "
             f"(Observation {observation_id}). Continue your reasoning process inside "

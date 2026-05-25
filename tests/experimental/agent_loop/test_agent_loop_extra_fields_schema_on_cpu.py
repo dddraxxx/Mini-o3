@@ -244,6 +244,9 @@ async def test_agent_loop_extra_fields_schema_stable_for_training_concat_on_cpu(
     # Stable schema: present regardless of which loop produced a sample.
     stable_keys = (
         "turn_scores",
+        "tool_calls",
+        "tool_responses",
+        "tool_trace",
         "tool_rewards",
         "min_global_steps",
         "max_global_steps",
@@ -258,6 +261,9 @@ async def test_agent_loop_extra_fields_schema_stable_for_training_concat_on_cpu(
     # And the list-typed fields are actually lists (not missing / scalar).
     assert merged.non_tensor_batch["turn_scores"][0] == []
     assert merged.non_tensor_batch["tool_rewards"][0] == []
+    assert merged.non_tensor_batch["tool_calls"][0] is None
+    assert merged.non_tensor_batch["tool_responses"][0] is None
+    assert merged.non_tensor_batch["tool_trace"][0] is None
 
 
 def test_agent_loop_aligns_text_and_mrope_position_ids_on_cpu():
@@ -315,6 +321,7 @@ async def test_agent_loop_postprocess_accepts_read_only_routed_experts_on_cpu():
         _get_mm_processor_kwargs = AgentLoopWorker._get_mm_processor_kwargs
         _compute_score = AgentLoopWorker._compute_score
         _compute_teacher_logprobs = AgentLoopWorker._compute_teacher_logprobs
+        _effective_response_length = AgentLoopWorker._effective_response_length
         distillation_enabled = False
 
         def __init__(self):

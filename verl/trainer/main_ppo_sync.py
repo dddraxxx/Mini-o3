@@ -857,6 +857,7 @@ class PPOTrainer:
         dump_all_inputs: list[str] = []
         dump_all_outputs: list[str] = []
         dump_all_keys: list[str] = []
+        dump_all_extra_fields: list[dict[str, Any]] = []
         session_to_sample_idx: dict[str, int] = {}
 
         for batch_dict in self.val_dataloader:
@@ -900,12 +901,14 @@ class PPOTrainer:
             )
 
             text_data = tq.kv_batch_get(
-                keys=batch.keys, partition_id=batch.partition_id, select_fields=["prompts", "responses"]
+                keys=batch.keys, partition_id=batch.partition_id, select_fields=["prompts", "responses", "extra_fields"]
             )
             text_data["prompts"] = text_data["prompts"].to_padded_tensor(padding=self.tokenizer.pad_token_id)
             text_data["responses"] = text_data["responses"].to_padded_tensor(padding=self.tokenizer.pad_token_id)
             all_inputs = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in text_data["prompts"]]
             all_outputs = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in text_data["responses"]]
+            all_extra_fields = text_data.pop("extra_fields", None)
+            all_extra_fields = all_extra_fields.tolist() if all_extra_fields is not None else [{}] * len(all_inputs)
 
             fields = ["uid", "rm_scores", "num_turns", "reward_model", "data_source", "extra_fields"]
             data = tq.kv_batch_get(keys=final_keys, partition_id=batch.partition_id, select_fields=fields)
@@ -949,6 +952,7 @@ class PPOTrainer:
             dump_all_inputs.extend(all_inputs)
             dump_all_outputs.extend(all_outputs)
             dump_all_keys.extend(batch.keys)
+            dump_all_extra_fields.extend(all_extra_fields)
 
             # 5. cleanup transfer queue and replay buffer
             tq.kv_clear(keys=batch.keys, partition_id=batch.partition_id)
@@ -969,6 +973,7 @@ class PPOTrainer:
             dump_all_inputs = [dump_all_inputs[i] for i in sorted_indices]
             dump_all_outputs = [dump_all_outputs[i] for i in sorted_indices]
             dump_all_keys = [dump_all_keys[i] for i in sorted_indices]
+            dump_all_extra_fields = [dump_all_extra_fields[i] for i in sorted_indices]
 
             # For ground truths, scores and reward extra infos, find the values in the
             # lists for the final samples of each session
@@ -978,15 +983,19 @@ class PPOTrainer:
                 for parts in [key.rsplit("_", 2)]
             ]
             session_final_indices = [session_to_sample_idx[session] for session in dump_all_sessions]
+            dump_extra_infos_dict = {
+                k: [v[i] for i in session_final_indices] for k, v in reward_extra_infos_dict.items()
+            }
+            dump_extra_infos_dict.update({"uid": dump_all_keys})
+            dump_extra_infos_dict.update(
+                self._dump_extra_fields_from_agent(dump_all_extra_fields, len(dump_all_inputs))
+            )
             self._dump_generations(
                 inputs=dump_all_inputs,
                 outputs=dump_all_outputs,
                 gts=[sample_gts[i] for i in session_final_indices],
                 scores=[sample_scores[i] for i in session_final_indices],
-                reward_extra_infos_dict={
-                    k: [v[i] for i in session_final_indices] for k, v in reward_extra_infos_dict.items()
-                }
-                | {"uid": dump_all_keys},
+                reward_extra_infos_dict=dump_extra_infos_dict,
                 dump_path=val_data_dir,
             )
 
@@ -1011,6 +1020,34 @@ class PPOTrainer:
 
         # Log to each configured logger
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
+
+    @staticmethod
+    def _dump_extra_fields_from_agent(extra_fields_list, n: int) -> dict[str, list]:
+        """Select non-metric agent-loop fields that should appear in generation JSONL dumps."""
+        dump_keys = (
+            "tool_calls",
+            "tool_responses",
+            "tool_trace",
+            "turn_scores",
+            "tool_rewards",
+            "exceed_mask",
+            "exceed_reason",
+            "void_mask",
+            "void_reason",
+        )
+        rows = extra_fields_list.tolist() if hasattr(extra_fields_list, "tolist") else extra_fields_list
+        if rows is None:
+            rows = []
+        rows = list(rows)
+        result: dict[str, list] = {}
+        for key in dump_keys:
+            values = [row.get(key) if isinstance(row, dict) else None for row in rows]
+            if len(values) < n:
+                values.extend([None] * (n - len(values)))
+            values = values[:n]
+            if any(value is not None for value in values):
+                result[key] = values
+        return result
 
     @staticmethod
     def _write_generations(inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path, global_steps):
@@ -1087,7 +1124,7 @@ class PPOTrainer:
     def _log_rollout_data(self, batch: KVBatchMeta, timing_raw: dict, rollout_data_dir: str):
         """Fetch rollout data from TransferQueue and dump sorted by uid."""
         with marked_timer("dump_rollout_generations", timing_raw, color="green"):
-            fields = ["uid", "prompts", "responses", "rm_scores", "reward_model"]
+            fields = ["uid", "prompts", "responses", "rm_scores", "reward_model", "extra_fields"]
             data = tq.kv_batch_get(keys=batch.keys, partition_id=batch.partition_id, select_fields=fields)
             data["prompts"] = data["prompts"].to_padded_tensor(padding=self.tokenizer.pad_token_id)
             data["responses"] = data["responses"].to_padded_tensor(padding=self.tokenizer.pad_token_id)
@@ -1096,6 +1133,8 @@ class PPOTrainer:
             inputs = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in data["prompts"]]
             outputs = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in data["responses"]]
             scores = data["rm_scores"].sum(dim=1).tolist()
+            extra_fields = data.pop("extra_fields", None)
+            extra_fields = extra_fields.tolist() if extra_fields is not None else [{}] * len(uids)
 
             reward_model = data.pop("reward_model", None)
             if reward_model is not None:
@@ -1117,8 +1156,10 @@ class PPOTrainer:
             outputs = [outputs[i] for i in sorted_indices]
             gts = [gts[i] for i in sorted_indices]
             scores = [scores[i] for i in sorted_indices]
+            extra_fields = [extra_fields[i] for i in sorted_indices]
 
             reward_extra_infos_dict = {"uid": [batch.keys[i] for i in sorted_indices]}
+            reward_extra_infos_dict.update(self._dump_extra_fields_from_agent(extra_fields, len(inputs)))
 
             self._dump_generations(
                 inputs=inputs,

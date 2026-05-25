@@ -132,6 +132,28 @@ For each question, follow this loop:
 </answer>.
 ```
 
+### Suite A2: `qwen35_official_zoom_tool_plain_question`
+
+This suite keeps the same official Qwen3.5 tool surface, parser, agent loop,
+and `image_zoom_in_tool` selection as Suite A, but does not prescribe a final
+answer delimiter. Use it when evaluating with a relaxed/plain final-answer
+extractor or an LLM judge.
+
+The user prompt is only the image token(s) followed by the raw question. The
+system prompt still teaches the inspect -> zoom -> review loop:
+
+```text
+You are a visual research assistant. Answer the user's image question by
+examining the image carefully and using the available zoom tool when visual
+details are unclear.
+
+For each question, follow this loop:
+1. First inspect the image with the user's question in mind.
+2. State what is visible and what needs closer inspection.
+3. If needed, call the zoom tool on a precise region.
+4. Review the zoom observation before deciding whether another zoom is needed.
+```
+
 Official reference tool surface:
 
 ```text
@@ -257,12 +279,23 @@ template/parser behavior unless the official Qwen3.5 path is requested.
 ```text
 MINIO3_TOOL_PROMPT_SUITE=qwen35_minio3_legacy_grounding
 MINIO3_TOOL_PROMPT_SUITE=qwen35_official_zoom_tool
+MINIO3_TOOL_PROMPT_SUITE=qwen35_official_zoom_tool_plain_question
 ```
 
 Legacy mode writes `agent_name=mini_o3_tool_agent` and
 `extra_info.tool_selection=["tool_crop"]`. Official mode writes
 `agent_name=tool_agent` by default and switches `extra_info.tool_selection` to
 the configured official tool name.
+
+`qwen35_official_zoom_tool_plain_question` is the same official Qwen3.5 tool
+surface as `qwen35_official_zoom_tool`, but removes the `<answer>...</answer>`
+instruction from the system prompt. The user message remains exactly the image
+placeholder(s) followed by the raw question, for example:
+
+```text
+<image>
+What is shown?
+```
 
 The train and val-smoke wrappers pass these through:
 
@@ -403,7 +436,10 @@ Expected checks:
 - `Qwen3XMLToolParser` extracts a zoom-tool function call.
 - `MiniO3CropTool` returns a zoom-in image.
 - The next turn contains a tool response / zoom observation image.
-- Validation generations still end with `<answer>...</answer>`.
+- With `qwen35_official_zoom_tool`, validation generations are still asked to
+  end with `<answer>...</answer>`.
+- With `qwen35_official_zoom_tool_plain_question`, validation generations are
+  not asked to use any final-answer delimiter.
 
 For regression coverage, also run the same script without the official env
 knobs. That should stay on `qwen35_minio3_legacy_grounding`,

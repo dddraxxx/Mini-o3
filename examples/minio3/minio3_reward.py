@@ -26,11 +26,35 @@ _TEXT_JUDGE_CLIENT: Any | None = None
 _TEXT_JUDGE_CLIENT_KEY: tuple[Any, ...] | None = None
 
 
-def _extract_answer(text: str) -> str | None:
+def _extract_tagged_answer(text: str) -> str | None:
     matches = ANSWER_RE.findall(text or "")
     if not matches:
         return None
     return matches[-1].strip()
+
+
+def _extract_plain_final_answer(text: str) -> str | None:
+    text = str(text or "")
+    if not text.strip():
+        return None
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[-1]
+    text = re.sub(r"<tool_response>.*?</tool_response>", " ", text, flags=re.DOTALL)
+    text = re.sub(r"<tool_call>.*?</tool_call>", " ", text, flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+
+def _extract_answer(text: str, *, relaxed: bool = False) -> tuple[str | None, str]:
+    tagged = _extract_tagged_answer(text)
+    if tagged is not None:
+        return tagged, "answer_tag"
+    if relaxed:
+        plain = _extract_plain_final_answer(text)
+        if plain is not None:
+            return plain, "plain_final"
+    return None, "missing"
 
 
 def _normalize(text: Any) -> str:
@@ -57,7 +81,7 @@ def _matches_choice_or_exact(prediction: str, ground_truth: Any) -> float:
 
 
 def _format_score(response: str) -> float:
-    has_answer = _extract_answer(response) is not None
+    has_answer = _extract_tagged_answer(response) is not None
     grounding_open = response.count("<grounding>")
     grounding_close = response.count("</grounding>")
     tool_call_open = response.count("<tool_call>")
@@ -217,10 +241,14 @@ def compute_score(
     self_judge_max_retries: Any | None = None,
     self_judge_timeout: Any = 60,
     self_judge_initial_delay: Any = 1.0,
+    self_judge_relaxed_answer: Any = False,
     **kwargs,
 ) -> dict[str, Any]:
     extra_info = extra_info or {}
-    prediction = _extract_answer(solution_str)
+    relaxed_answer = _truthy(self_judge_relaxed_answer) or _truthy(
+        os.environ.get("MINIO3_RELAXED_ANSWER_EXTRACTION", False)
+    )
+    prediction, prediction_source = _extract_answer(solution_str, relaxed=relaxed_answer)
     rule_acc = 0.0 if prediction is None else _matches_choice_or_exact(prediction, ground_truth)
     fmt = _format_score(solution_str)
     tool_call_count = _tool_call_count(solution_str or "")
@@ -298,6 +326,9 @@ def compute_score(
         "acc": float(acc),
         "format_score": float(fmt),
         "tool_call_count": float(tool_call_count),
+        "answer_tag_present": float(_extract_tagged_answer(solution_str) is not None),
+        "prediction_source": prediction_source,
+        "prediction": prediction or "",
     }
     result.update(judge_fields)
     return result

@@ -60,6 +60,29 @@ def test_self_judge_overrides_rule_exact_match(monkeypatch):
     assert result["judge_response"] == "Yes"
 
 
+def test_self_judge_relaxed_answer_uses_plain_final_text(monkeypatch):
+    def fake_judge(**kwargs):
+        assert "Pred: Based on the visual evidence, the animal is a white stork." in kwargs["prompt"]
+        return 1, "Yes", 1
+
+    monkeypatch.setattr(minio3_reward, "_query_llm_judge", fake_judge)
+
+    result = minio3_reward.compute_score(
+        data_source="visual_probe_easy",
+        solution_str="<think>I inspected the image.</think> Based on the visual evidence, the animal is a white stork.",
+        ground_truth="a bird",
+        extra_info={"question": "What animal is shown?"},
+        self_judge_reward=True,
+        self_judge_provider="deepseek",
+        self_judge_relaxed_answer=True,
+    )
+
+    assert result["answer_tag_present"] == 0.0
+    assert result["prediction_source"] == "plain_final"
+    assert result["acc"] == 1.0
+    assert result["score"] == 1.0
+
+
 def test_deepseek_judge_requires_api_key(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr(minio3_reward, "_TEXT_JUDGE_CLIENT", None)

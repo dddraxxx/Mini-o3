@@ -571,6 +571,34 @@ class RayPPOTrainer:
 
         print(f"Appended {len(entries)} train samples to {output_path}")
 
+    @staticmethod
+    def _dump_extra_fields_from_agent(rows, n: int) -> dict[str, list]:
+        """Select non-metric agent-loop fields that should appear in generation JSONL dumps."""
+        dump_keys = (
+            "tool_calls",
+            "tool_responses",
+            "tool_trace",
+            "turn_scores",
+            "tool_rewards",
+            "exceed_mask",
+            "exceed_reason",
+            "void_mask",
+            "void_reason",
+        )
+        rows = rows.tolist() if hasattr(rows, "tolist") else rows
+        if rows is None:
+            rows = []
+        rows = list(rows)
+        result: dict[str, list] = {}
+        for key in dump_keys:
+            values = [row.get(key) if isinstance(row, dict) else None for row in rows]
+            if len(values) < n:
+                values.extend([None] * (n - len(values)))
+            values = values[:n]
+            if any(value is not None for value in values):
+                result[key] = values
+        return result
+
     def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL asynchronously."""
         global_steps = self.global_steps
@@ -647,6 +675,7 @@ class RayPPOTrainer:
             image_paths = [self._extract_image_paths(sample) for sample in sample_non_tensors]
             if any(image_paths):
                 reward_extra_infos_to_dump["image_paths"] = image_paths
+            reward_extra_infos_to_dump.update(self._dump_extra_fields_from_agent(sample_non_tensors, n))
             for key in ("uid", "data_source"):
                 if key in batch.non_tensor_batch:
                     values = batch.non_tensor_batch[key]
@@ -1017,6 +1046,7 @@ class RayPPOTrainer:
         sample_uids = []
         sample_image_paths = []
         sample_data_sources = []
+        sample_agent_dump_rows = []
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -1082,6 +1112,7 @@ class RayPPOTrainer:
             sample_inputs.extend(input_texts)
             sample_uids.extend(test_batch.non_tensor_batch["uid"])
             sample_image_paths.extend([self._extract_image_paths(item.non_tensor_batch) for item in test_batch])
+            sample_agent_dump_rows.extend([item.non_tensor_batch for item in test_batch])
 
             # evaluate using reward_function
             reward_tensor, reward_extra_info = extract_reward(test_batch)
@@ -1116,6 +1147,9 @@ class RayPPOTrainer:
             reward_extra_infos_to_dump["data_source"] = sample_data_sources
             if any(sample_image_paths):
                 reward_extra_infos_to_dump["image_paths"] = sample_image_paths
+            reward_extra_infos_to_dump.update(
+                self._dump_extra_fields_from_agent(sample_agent_dump_rows, len(sample_inputs))
+            )
             self._dump_generations(
                 inputs=sample_inputs,
                 outputs=sample_outputs,

@@ -85,6 +85,8 @@ class AgentData:
         self.response_logprobs: list[float] = []
         self.turn_scores: list[float] = []
         self.tool_rewards: list[float] = []
+        self.tool_calls_trace: list[dict[str, Any]] = []
+        self.tool_responses_trace: list[dict[str, Any]] = []
         self.user_turns = 0
         self.assistant_turns = 0
 
@@ -203,7 +205,22 @@ class ToolAgentLoop(AgentLoopBase):
             ),
             extra_fields=agent_data.extra_fields,
         )
-        output.extra_fields.update({"turn_scores": agent_data.turn_scores, "tool_rewards": agent_data.tool_rewards})
+        output.extra_fields.update(
+            {
+                "turn_scores": agent_data.turn_scores,
+                "tool_rewards": agent_data.tool_rewards,
+                "tool_calls": agent_data.tool_calls_trace,
+                "tool_responses": agent_data.tool_responses_trace,
+                "tool_trace": [
+                    {"call": call, "response": response}
+                    for call, response in zip(
+                        agent_data.tool_calls_trace,
+                        agent_data.tool_responses_trace,
+                        strict=True,
+                    )
+                ],
+            }
+        )
         return output
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
@@ -313,9 +330,10 @@ class ToolAgentLoop(AgentLoopBase):
 
         t0 = time.monotonic()
         _stage_log(f"tool.start request={agent_data.request_id[:8]} calls={len(agent_data.tool_calls)}")
+        executed_tool_calls = agent_data.tool_calls[: self.max_parallel_calls]
         tasks = []
         tool_call_names = []
-        for tool_call in agent_data.tool_calls[: self.max_parallel_calls]:
+        for tool_call in executed_tool_calls:
             tasks.append(self._call_tool(tool_call, agent_data.tools_kwargs, agent_data))
             tool_call_names.append(tool_call.name)
 
@@ -324,7 +342,8 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Process tool responses and update multi_modal_data
         # Removed: agent_data.new_images_this_turn = []
-        for tool_response, tool_reward, _ in responses:
+        for tool_call, (tool_response, tool_reward, tool_metrics) in zip(executed_tool_calls, responses, strict=True):
+            self._record_tool_interaction(agent_data, tool_call, tool_response, tool_reward, tool_metrics)
             # Create message from tool response
             if tool_response.image or tool_response.video:
                 # Multi-modal content with structured format
@@ -402,6 +421,52 @@ class ToolAgentLoop(AgentLoopBase):
             f"obs_tokens={len(response_ids)} dt={time.monotonic() - t0:.3f}s"
         )
         return AgentState.GENERATING
+
+    @staticmethod
+    def _safe_json_loads(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+
+    @staticmethod
+    def _count_media_items(value: Any) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, list):
+            return len([item for item in value if item is not None])
+        return 1
+
+    def _record_tool_interaction(
+        self,
+        agent_data: AgentData,
+        tool_call: FunctionCall,
+        tool_response: ToolResponse,
+        tool_reward: float | None,
+        tool_metrics: dict[str, Any] | None,
+    ) -> None:
+        call_record = {
+            "turn": agent_data.assistant_turns,
+            "name": tool_call.name,
+            "arguments": self._safe_json_loads(tool_call.arguments),
+        }
+        image_count = self._count_media_items(tool_response.image)
+        video_count = self._count_media_items(tool_response.video)
+        response_record = {
+            "turn": agent_data.assistant_turns,
+            "name": tool_call.name,
+            "text": tool_response.text or "",
+            "image_count": image_count,
+            "video_count": video_count,
+            "has_image": image_count > 0,
+            "has_video": video_count > 0,
+            "reward": tool_reward,
+            "metrics": tool_metrics or {},
+        }
+        agent_data.tool_calls_trace.append(call_record)
+        agent_data.tool_responses_trace.append(response_record)
 
     async def _encode_tool_response_messages(
         self,
