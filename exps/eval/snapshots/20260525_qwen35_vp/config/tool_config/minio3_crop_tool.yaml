@@ -1,0 +1,8 @@
+tools:
+  - class_name: verl.tools.minio3_crop_tool.MiniO3CropTool
+    config:
+      type: native
+      use_relative_coordinates: true
+      resize: 1
+      min_crop_size: 28
+      max_aspect_ratio: 200
