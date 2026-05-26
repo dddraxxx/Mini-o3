@@ -2,3 +2,11 @@
 # verl Qwen3.5 path requires this transformers 5.x commit. Use this file with
 # uv's --overrides flag whenever compiling or installing the Qwen3.5 profile.
 transformers @ git+https://github.com/huggingface/transformers.git@cc7ab9be508ce6ed3637bba9e50367b29b742dc6
+
+# verl's DataProto.to_tensordict() path used by async agent-loop training
+# requires tensordict>=0.10.
+tensordict==0.10.0
+
+# flash-linear-attention's gated delta rule backward requires tilelang on
+# Hopper with Triton>=3.4.
+tilelang==0.1.10
