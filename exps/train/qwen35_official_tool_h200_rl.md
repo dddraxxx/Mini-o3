@@ -113,9 +113,12 @@ MAX_NUM_BATCHED_TOKENS=65536
 MAX_NUM_SEQS=256
 PROMPT_ADMISSION_ENABLE=True
 PROMPT_ADMISSION_POOL_SIZE=160
+TOTAL_TRAINING_STEPS=200
 SAVE_LORA_ONLY=True
 SAVE_FREQ=10
 TEST_FREQ=10
+MINIO3_RAY_STARTUP_RETRIES=2
+MINIO3_RAY_STARTUP_RETRY_DELAY_S=15
 ```
 
 `TRAIN_BATCH_SIZE` must be divisible by `AGENT_NUM_WORKERS` only when prompt
@@ -144,12 +147,10 @@ worker registration timeouts.
 
 ## 200-Step Pilot
 
-A 200-step formal pilot keeps the current formal H200 defaults and only changes
-the step count:
+The formal H200 script now defaults to the current 200-step pilot profile:
 
 ```bash
 cd /mnt/localssd/Mini-o3
-TOTAL_TRAINING_STEPS=200 \
 bash exps/train/run_qwen35_official_tool_h200_rl.sh formal
 ```
 
@@ -241,8 +242,8 @@ batch/void_sample_ratio=0.970703125
 The current script/code snapshot for this run is:
 
 - `run_qwen35_official_tool_h200_rl.sh` defaults to 64 agent workers, a 160
-  prompt-admission pool, PPO micro batch 2 per GPU, Ray 96 CPUs, 200-step
-  override support, and config-only printing for these parameters.
+  prompt-admission pool, PPO micro batch 2 per GPU, Ray 96 CPUs, 200 steps,
+  early Ray startup retry, and config-only printing for these parameters.
 - The train-batch divisibility guard only applies when prompt admission is
   disabled.
 - The active training code keeps vLLM official Qwen3.5 tool formatting through

@@ -44,7 +44,7 @@ USER_FORWARD_VARS=(
   PROMPT_ADMISSION_ENABLE PROMPT_ADMISSION_POOL_SIZE LOGGER_BACKENDS TRAIN_MAX_SAMPLES VAL_MAX_SAMPLES \
   DATALOADER_NUM_WORKERS FILTER_OVERLONG_PROMPTS_WORKERS PROJECT_NAME EXPERIMENT_NAME RAY_NUM_CPUS ROLLOUT_DP ROLLOUT_TP \
   ROLLOUT_GPU_MEM_UTIL ACTOR_LR USE_KL_LOSS KL_LOSS_COEF ENTROPY_COEFF \
-  CLIP_RATIO_HIGH CLIP_RATIO_LOW
+  CLIP_RATIO_HIGH CLIP_RATIO_LOW MINIO3_RAY_STARTUP_RETRIES MINIO3_RAY_STARTUP_RETRY_DELAY_S
 )
 
 declare -A USER_SET
@@ -126,6 +126,8 @@ export HYDRA_FULL_ERROR=${HYDRA_FULL_ERROR:-1}
 export VLLM_USE_V1=${VLLM_USE_V1:-1}
 export MINIO3_STAGE_LOG=${MINIO3_STAGE_LOG:-1}
 export MINIO3_TRAJ_STATUS_INTERVAL_S=${MINIO3_TRAJ_STATUS_INTERVAL_S:-15}
+export MINIO3_RAY_STARTUP_RETRIES=${MINIO3_RAY_STARTUP_RETRIES:-2}
+export MINIO3_RAY_STARTUP_RETRY_DELAY_S=${MINIO3_RAY_STARTUP_RETRY_DELAY_S:-15}
 
 export MINIO3_TOOL_PROMPT_SUITE=${MINIO3_TOOL_PROMPT_SUITE:-qwen35_official_zoom_tool_plain_question}
 export MINIO3_OFFICIAL_TOOL_NAME=${MINIO3_OFFICIAL_TOOL_NAME:-image_zoom_in_tool}
@@ -202,7 +204,7 @@ export PROMPT_ADMISSION_WAIT_TIMEOUT_S=${PROMPT_ADMISSION_WAIT_TIMEOUT_S:-0.1}
 export PROMPT_ADMISSION_CANCEL_UNFINISHED=${PROMPT_ADMISSION_CANCEL_UNFINISHED:-True}
 
 export TOTAL_EPOCHS=${TOTAL_EPOCHS:-100}
-export TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-100}
+export TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-200}
 export SAVE_FREQ=${SAVE_FREQ:-10}
 export SAVE_LORA_ONLY=${SAVE_LORA_ONLY:-True}
 export TEST_FREQ=${TEST_FREQ:-10}
@@ -256,16 +258,52 @@ if [[ "${MINIO3_PRINT_CONFIG_ONLY:-0}" == "1" ]]; then
     SELF_JUDGE_MODEL SELF_JUDGE_RELAXED_ANSWER PROMPT_ADMISSION_ENABLE \
     PROMPT_ADMISSION_POOL_SIZE \
     TOTAL_TRAINING_STEPS SAVE_FREQ TEST_FREQ LOGGER_BACKENDS WANDB_MODE \
+    MINIO3_RAY_STARTUP_RETRIES MINIO3_RAY_STARTUP_RETRY_DELAY_S \
     OMP_NUM_THREADS MKL_NUM_THREADS OPENBLAS_NUM_THREADS NUMEXPR_NUM_THREADS; do
     printf '%s=%s\n' "$name" "${!name-}"
   done
   exit 0
 fi
 
-bash "$PROJECT_DIR/examples/minio3/run_real_train_pyvision_style_h200.sh" \
+ray_startup_failure_seen() {
+  local start_offset=${1:-0}
+  [[ -n "${LOG_PATH:-}" && -f "$LOG_PATH" ]] || return 1
+  tail -c "+$((start_offset + 1))" "$LOG_PATH" | grep -Eq \
+    'Runtime Env Agent timed out|Raylet could not connect to Runtime Env Agent|Failed to register worker to Raylet|runtime_env_agent'
+}
+
+training_has_started() {
+  [[ -s "$RUN_DIR/train_step_metrics.jsonl" ]] && return 0
+  [[ -s "$RUN_DIR/train_samples.jsonl" ]] && return 0
+  if [[ -d "$RUN_DIR/rollout_generations" ]] && find "$RUN_DIR/rollout_generations" -maxdepth 1 -type f -name '*.jsonl' -print -quit | grep -q .; then
+    return 0
+  fi
+  return 1
+}
+
+TRAIN_CMD=(
+  bash "$PROJECT_DIR/examples/minio3/run_real_train_pyvision_style_h200.sh"
   "data.train_max_samples=${TRAIN_MAX_SAMPLES}" \
   "data.val_max_samples=${VAL_MAX_SAMPLES}" \
   "data.filter_overlong_prompts_workers=${FILTER_OVERLONG_PROMPTS_WORKERS}" \
   "++ray_kwargs.ray_init.num_cpus=${RAY_NUM_CPUS}" \
   "+reward.custom_reward_function.reward_kwargs.self_judge_relaxed_answer=${SELF_JUDGE_RELAXED_ANSWER}" \
   "$@"
+)
+
+attempt=1
+while true; do
+  log_start_bytes=$(stat -c '%s' "$LOG_PATH" 2>/dev/null || echo 0)
+  if "${TRAIN_CMD[@]}"; then
+    exit 0
+  fi
+  status=$?
+
+  if (( attempt >= MINIO3_RAY_STARTUP_RETRIES )) || training_has_started || ! ray_startup_failure_seen "$log_start_bytes"; then
+    exit "$status"
+  fi
+
+  echo "[minio3-launch] early Ray startup failure detected; retrying attempt $((attempt + 1))/${MINIO3_RAY_STARTUP_RETRIES} after ${MINIO3_RAY_STARTUP_RETRY_DELAY_S}s"
+  sleep "$MINIO3_RAY_STARTUP_RETRY_DELAY_S"
+  attempt=$((attempt + 1))
+done
