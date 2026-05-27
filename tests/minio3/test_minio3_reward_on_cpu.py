@@ -83,6 +83,80 @@ def test_self_judge_relaxed_answer_uses_plain_final_text(monkeypatch):
     assert result["score"] == 1.0
 
 
+def test_self_judge_relaxed_answer_caps_plain_final_units(monkeypatch):
+    captured = {}
+
+    def fake_judge(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return 1, "Yes", 1
+
+    monkeypatch.setattr(minio3_reward, "_query_llm_judge", fake_judge)
+
+    repeated = " ".join(f"word{i}" for i in range(60))
+    result = minio3_reward.compute_score(
+        data_source="visual_probe_easy",
+        solution_str=f"<think>I inspected the image.</think> {repeated}",
+        ground_truth="blue",
+        extra_info={"question": "What color is it?"},
+        self_judge_reward=True,
+        self_judge_provider="deepseek",
+        self_judge_relaxed_answer=True,
+    )
+
+    assert result["prediction_source"] == "plain_final"
+    assert result["prediction"] == " ".join(f"word{i}" for i in range(40, 60))
+    assert f"Pred: {result['prediction']}" in captured["prompt"]
+    assert "word39" not in captured["prompt"]
+
+
+def test_self_judge_relaxed_answer_prefers_last_complete_sentence(monkeypatch):
+    def fake_judge(**kwargs):
+        assert "Pred: The person is wearing red clothes." in kwargs["prompt"]
+        return 1, "Yes", 1
+
+    monkeypatch.setattr(minio3_reward, "_query_llm_judge", fake_judge)
+
+    result = minio3_reward.compute_score(
+        data_source="visual_probe_easy",
+        solution_str=(
+            "<think>I inspected the image.</think> "
+            "The person is wearing red clothes. "
+            "The person is wearing red clothes. "
+            "The person is"
+        ),
+        ground_truth="red clothes",
+        extra_info={"question": "What is the person wearing?"},
+        self_judge_reward=True,
+        self_judge_provider="deepseek",
+        self_judge_relaxed_answer=True,
+    )
+
+    assert result["prediction"] == "The person is wearing red clothes."
+
+
+def test_self_judge_error_fields_are_stable(monkeypatch):
+    def failing_judge(**kwargs):
+        raise RuntimeError("quota exceeded")
+
+    monkeypatch.setattr(minio3_reward, "_query_llm_judge", failing_judge)
+
+    result = minio3_reward.compute_score(
+        data_source="visual_probe_easy",
+        solution_str="<think>x</think><answer>blue</answer>",
+        ground_truth="blue",
+        extra_info={"question": "What color is it?"},
+        self_judge_reward=True,
+        self_judge_provider="deepseek",
+        self_judge_max_retries=3,
+    )
+
+    assert result["score"] == 0.0
+    assert result["judge_score"] == 0.0
+    assert result["judge_attempts"] == 3.0
+    assert result["judge_source"] == "deepseek"
+    assert "quota exceeded" in result["judge_error"]
+
+
 def test_deepseek_judge_requires_api_key(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr(minio3_reward, "_TEXT_JUDGE_CLIENT", None)
