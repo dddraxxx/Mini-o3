@@ -5,7 +5,7 @@ run on the local 8x H200 node.
 
 ## Scope
 
-The runnable entrypoint is:
+The current moving entrypoint is:
 
 ```bash
 exps/train/run_qwen35_official_tool_h200_rl.sh
@@ -13,6 +13,20 @@ exps/train/run_qwen35_official_tool_h200_rl.sh
 
 Use `formal` for real training. `smoke` is only for checking the code path and
 uses a tiny dataset, short response budget, no DeepSeek reward, and one update.
+
+Frozen experiment launchers are kept as separate scripts so old runs remain
+reproducible even when the moving entrypoint changes:
+
+```text
+exps/train/run_qwen35_official_tool_h200_rl_t6_200step_20260526.sh
+exps/train/run_qwen35_official_tool_h200_rl_t12_100step_20260527.sh
+```
+
+The cross-run summary is:
+
+```text
+exps/train/qwen35_official_tool_h200_rl_experiment_index.md
+```
 
 ## Preflight
 
@@ -97,6 +111,8 @@ ROLLOUT_TP=1
 ROLLOUT_N=8
 AGENT_NUM_WORKERS=64
 RAY_NUM_CPUS=96
+MAX_ASSISTANT_TURNS=12
+MAX_USER_TURNS=12
 FILTER_OVERLONG_PROMPTS_WORKERS=16
 OMP_NUM_THREADS=1
 MKL_NUM_THREADS=1
@@ -113,7 +129,8 @@ MAX_NUM_BATCHED_TOKENS=65536
 MAX_NUM_SEQS=256
 PROMPT_ADMISSION_ENABLE=True
 PROMPT_ADMISSION_POOL_SIZE=160
-TOTAL_TRAINING_STEPS=200
+ACTOR_LR=1e-6
+TOTAL_TRAINING_STEPS=100
 SAVE_LORA_ONLY=True
 SAVE_FREQ=10
 TEST_FREQ=10
@@ -145,14 +162,20 @@ An 80-worker launch was also stopped before step 1 because Ray registered only
 two active `AgentLoopWorker.generate_sequences` tasks while repeatedly logging
 worker registration timeouts.
 
-## 200-Step Pilot
+## 100-Step Turn-Limit-12 Follow-Up
 
-The formal H200 script now defaults to the current 200-step pilot profile:
+The formal H200 script now defaults to a 100-step turn-limit-12 follow-up
+profile:
 
 ```bash
 cd /mnt/localssd/Mini-o3
-bash exps/train/run_qwen35_official_tool_h200_rl.sh formal
+bash exps/train/run_qwen35_official_tool_h200_rl_t12_100step_20260527.sh formal
 ```
+
+The learning rate remains `ACTOR_LR=1e-6` for this follow-up. This keeps the
+comparison focused on whether increasing the train tool-turn budget from 6 to
+12 reduces turn-limit empty answers; changing the learning rate at the same
+time would confound that read.
 
 The script launches a persistent tmux session and writes:
 
@@ -244,6 +267,8 @@ The current script/code snapshot for this run is:
 - `run_qwen35_official_tool_h200_rl.sh` defaults to 64 agent workers, a 160
   prompt-admission pool, PPO micro batch 2 per GPU, Ray 96 CPUs, 200 steps,
   early Ray startup retry, and config-only printing for these parameters.
+- Frozen launcher:
+  `exps/train/run_qwen35_official_tool_h200_rl_t6_200step_20260526.sh`.
 - The train-batch divisibility guard only applies when prompt admission is
   disabled.
 - The active training code keeps vLLM official Qwen3.5 tool formatting through

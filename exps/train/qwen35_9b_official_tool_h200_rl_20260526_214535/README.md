@@ -24,7 +24,7 @@ Entrypoint:
 
 ```bash
 cd /mnt/localssd/Mini-o3
-bash exps/train/run_qwen35_official_tool_h200_rl.sh formal
+bash exps/train/run_qwen35_official_tool_h200_rl_t6_200step_20260526.sh formal
 ```
 
 Main configuration observed in the log:
