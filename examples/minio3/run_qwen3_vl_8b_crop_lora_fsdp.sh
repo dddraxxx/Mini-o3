@@ -79,6 +79,7 @@ VAL_DO_SAMPLE=${VAL_DO_SAMPLE:-False}
 VAL_TEMPERATURE=${VAL_TEMPERATURE:-0}
 VAL_TOP_P=${VAL_TOP_P:-1.0}
 VAL_TOP_K=${VAL_TOP_K:--1}
+ADD_VISION_ID=${ADD_VISION_ID:-True}
 
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
 TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-}
@@ -144,6 +145,7 @@ DATA=(
     data.max_response_length=${MAX_RESPONSE_LENGTH}
     data.filter_overlong_prompts=True
     data.truncation='error'
+    +data.apply_chat_template_kwargs.add_vision_id=${ADD_VISION_ID}
     data.tool_config_path=null
     data.function_tool_path=null
 )

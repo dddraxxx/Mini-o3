@@ -445,8 +445,65 @@ For regression coverage, also run the same script without the official env
 knobs. That should stay on `qwen35_minio3_legacy_grounding`,
 `minio3_grounding`, and `mini_o3_tool_agent`.
 
-## Open Questions
+## SFT/RL Alignment Decision
 
-- Should official tool responses use pure `<tool_response>` semantics, or should
-they keep the Mini-o3 "After Action N, here is Observation N" text for
-continuity with existing SFT/RL data?
+For Qwen3.5 official-tool runs, both SFT conversion and RL/eval runtime should
+use `add_vision_id=True`. This makes the rendered prompt show images as
+`Picture 1:`, `Picture 2:`, etc. The picture label is one-based display text;
+the official `image_zoom_in_tool.img_idx` parameter remains zero-based.
+
+Successful zoom-tool responses should follow the official Qwen-Agent behavior:
+return the crop image only. Do not add local observation prose such as
+`Zoom-in observation.` or `This returned image is now image index ...` by
+default.
+
+Cold-start SFT conversion should preserve the assistant reasoning text while
+rewriting only the tool/final-answer protocol:
+
+- `<grounding>{"bbox_2d": ..., "source": ...}</grounding>` becomes structured
+  `assistant.tool_calls` for `image_zoom_in_tool`.
+- Legacy `[0, 1]` float boxes become Qwen-Agent `[0, 1000]` integer boxes.
+- `source=original_image` maps to `img_idx=0`; `source=observation_k` maps to
+  `img_idx=k`.
+- `label` uses a deterministic fallback, currently `selected region`.
+- Legacy human observation messages become `role=tool` messages containing only
+  `<image>`.
+- `<answer>...</answer>` becomes the current `Final answer: ...` final response
+  style.
+- The old system prompt is replaced with the Qwen3.5 official zoom-tool prompt;
+  it must not teach `<grounding>`, `source`, or `<answer>`.
+
+The converter entrypoint is:
+
+```bash
+uv run --project . --no-sync python examples/minio3/preprocess_coldstart_sft.py \
+  --input data/minio3_coldstart_hf \
+  --output data/minio3_coldstart_verl_sft_qwen35_official_tool/train_shards \
+  --rows-per-shard 512 \
+  --min-pixels 40000 \
+  --max-pixels 2000000
+```
+
+Recommended SFT config:
+
+```text
+data.apply_chat_template_kwargs.add_vision_id=True
+data.messages_key=messages
+data.image_key=images
+data.tools_key=tools
+data.whole_conversation_tokenize=True
+data.read_parquet_dtype_backend=default
+data.image_min_pixels=40000
+data.image_max_pixels=2000000
+```
+
+Practical loader notes:
+
+- Use parquet shards rather than one large byte-image parquet. A single 8GB+
+  nested `images` column can hit pyarrow chunked nested-array limits.
+- Keep pixel limits in SFT config instead of embedding them into the byte-image
+  struct. The dataset injects `min_pixels` and `max_pixels` before qwen-vl-utils
+  image preprocessing.
+- Qwen3.5 official tool conversations require whole-conversation tokenization;
+  per-message tokenization can fail because the Qwen3.5 chat template expects
+  valid tool-call context.

@@ -76,7 +76,7 @@ class MiniO3CropTool(BaseTool):
             "minio3_crop/x1": bbox[2],
             "minio3_crop/y1": bbox[3],
         }
-        return ToolResponse(text="Zoom-in observation.", image=[crop]), 0.0, metrics
+        return ToolResponse(image=[crop]), 0.0, metrics
 
     def _resolve_image_index(self, parameters: dict[str, Any], num_images: int) -> int:
         if "img_idx" in parameters:

@@ -147,17 +147,21 @@ central tower decoration
 
 def test_qwen3_tool_response_delta_is_template_safe():
     text = ToolAgentLoop._build_qwen3_tool_response_text(
-        [{"role": "tool", "content": [{"type": "image"}, {"type": "text", "text": "Zoom-in observation."}]}]
+        [{"role": "tool", "content": [{"type": "image"}]}],
+        add_vision_id=True,
+        image_start_index=2,
     )
 
     assert text.startswith("<|im_start|>user\n<tool_response>\n")
-    assert "<|vision_start|><|image_pad|><|vision_end|>" in text
+    assert "Picture 2: <|vision_start|><|image_pad|><|vision_end|>" in text
+    assert "Zoom-in observation." not in text
     assert text.endswith("<|im_start|>assistant\n<think>\n")
 
     no_thinking_text = ToolAgentLoop._build_qwen3_tool_response_text(
-        [{"role": "tool", "content": "Zoom-in observation."}],
+        [{"role": "tool", "content": [{"type": "image"}]}],
         enable_thinking=False,
     )
+    assert "<|vision_start|><|image_pad|><|vision_end|>" in no_thinking_text
     assert no_thinking_text.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n")
 
 
@@ -171,7 +175,7 @@ def test_tool_trace_records_structured_calls_without_image_bytes():
     loop._record_tool_interaction(
         AgentData,
         FunctionCall(name="image_zoom_in_tool", arguments='{"bbox_2d": [1, 2, 3, 4], "img_idx": 0}'),
-        ToolResponse(text="Zoom-in observation.", image=[Image.new("RGB", (4, 4))]),
+        ToolResponse(image=[Image.new("RGB", (4, 4))]),
         0.0,
         {"minio3_crop/source_index": 0},
     )
@@ -187,7 +191,7 @@ def test_tool_trace_records_structured_calls_without_image_bytes():
         {
             "turn": 2,
             "name": "image_zoom_in_tool",
-            "text": "Zoom-in observation.",
+            "text": "",
             "image_count": 1,
             "video_count": 0,
             "has_image": True,

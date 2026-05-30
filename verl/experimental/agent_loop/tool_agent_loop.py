@@ -397,6 +397,7 @@ class ToolAgentLoop(AgentLoopBase):
             add_messages,
             new_images_this_turn,
             tool_call_names=tool_call_names,
+            image_start_index=self._count_media_items(agent_data.image_data) + 1,
         )
 
         if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
@@ -474,6 +475,7 @@ class ToolAgentLoop(AgentLoopBase):
         new_images_this_turn: list[Any],
         *,
         tool_call_names: list[str],
+        image_start_index: int = 1,
     ) -> list[int]:
         if self.tool_parser_name == "gpt-oss":
             logger.info("manually format tool responses for gpt-oss")
@@ -483,9 +485,17 @@ class ToolAgentLoop(AgentLoopBase):
             )
 
         if self.tool_parser_name == "qwen3_coder":
+            add_vision_id_value = self.apply_chat_template_kwargs.get("add_vision_id", False)
+            add_vision_id = (
+                add_vision_id_value.lower() in {"1", "true", "yes", "on"}
+                if isinstance(add_vision_id_value, str)
+                else bool(add_vision_id_value)
+            )
             raw_prompt = self._build_qwen3_tool_response_text(
                 add_messages,
                 enable_thinking=self.apply_chat_template_kwargs.get("enable_thinking"),
+                add_vision_id=add_vision_id,
+                image_start_index=image_start_index,
             )
             if self.processor is not None:
                 model_inputs = await self.loop.run_in_executor(
@@ -514,18 +524,28 @@ class ToolAgentLoop(AgentLoopBase):
         )
 
     @staticmethod
-    def _render_qwen3_tool_content(content: Any) -> str:
+    def _render_qwen3_tool_content(
+        content: Any,
+        *,
+        add_vision_id: bool = False,
+        image_counter: list[int] | None = None,
+    ) -> str:
         if isinstance(content, str):
             return content
         if content is None:
             return ""
         if isinstance(content, list):
+            if image_counter is None:
+                image_counter = [0]
             rendered = []
             for item in content:
                 if not isinstance(item, dict):
                     continue
                 item_type = item.get("type")
                 if item_type == "image" or "image" in item or "image_url" in item:
+                    image_counter[0] += 1
+                    if add_vision_id:
+                        rendered.append(f"Picture {image_counter[0]}: ")
                     rendered.append("<|vision_start|><|image_pad|><|vision_end|>")
                 elif item_type == "video" or "video" in item:
                     rendered.append("<|vision_start|><|video_pad|><|vision_end|>")
@@ -540,11 +560,20 @@ class ToolAgentLoop(AgentLoopBase):
         add_messages: list[dict[str, Any]],
         *,
         enable_thinking: Any = None,
+        add_vision_id: bool = False,
+        image_start_index: int = 1,
     ) -> str:
         parts = ["<|im_start|>user"]
+        image_counter = [max(int(image_start_index), 1) - 1]
         for message in add_messages:
             parts.append("\n<tool_response>\n")
-            parts.append(cls._render_qwen3_tool_content(message.get("content")))
+            parts.append(
+                cls._render_qwen3_tool_content(
+                    message.get("content"),
+                    add_vision_id=add_vision_id,
+                    image_counter=image_counter,
+                )
+            )
             parts.append("\n</tool_response>")
         if enable_thinking is False:
             parts.append("<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")

@@ -263,6 +263,7 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
             add_messages,
             new_images_this_turn,
             tool_call_names=tool_call_names,
+            image_start_index=self._count_media_items(agent_data.image_data) + 1,
         )
 
         if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
