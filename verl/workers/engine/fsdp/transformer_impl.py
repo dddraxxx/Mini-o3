@@ -329,6 +329,102 @@ class FSDPEngine(BaseEngine):
 
         return module
 
+    @staticmethod
+    def _resolve_module_path(module, path: str):
+        current = module
+        for part in path.split("."):
+            if not hasattr(current, part):
+                return None
+            current = getattr(current, part)
+        return current
+
+    @staticmethod
+    def _set_requires_grad(module, requires_grad: bool, skip_param_ids: set[int] | None = None) -> tuple[int, int]:
+        changed = 0
+        total = 0
+        skip_param_ids = skip_param_ids or set()
+        for parameter in module.parameters():
+            if id(parameter) in skip_param_ids:
+                continue
+            total += parameter.numel()
+            if parameter.requires_grad != requires_grad:
+                parameter.requires_grad = requires_grad
+                changed += parameter.numel()
+        return changed, total
+
+    def _freeze_multimodal_modules(self, module):
+        freeze_vision_tower = bool(getattr(self.model_config, "freeze_vision_tower", False))
+        freeze_projector = bool(getattr(self.model_config, "freeze_multi_modal_projector", False))
+        if not freeze_vision_tower and not freeze_projector:
+            return
+
+        vision_paths = (
+            "model.visual",
+            "visual",
+            "model.vision_tower",
+            "vision_tower",
+            "model.vision_model",
+            "vision_model",
+            "model.vision_encoder",
+            "vision_encoder",
+        )
+        projector_paths = (
+            "model.visual.merger",
+            "visual.merger",
+            "model.multi_modal_projector",
+            "multi_modal_projector",
+            "model.mm_projector",
+            "mm_projector",
+            "model.vision_projection",
+            "vision_projection",
+            "model.visual_projection",
+            "visual_projection",
+        )
+
+        projector_modules = [
+            (path, found) for path in projector_paths if (found := self._resolve_module_path(module, path)) is not None
+        ]
+        projector_param_ids = {id(parameter) for _, found in projector_modules for parameter in found.parameters()}
+
+        freeze_messages = []
+        if freeze_vision_tower:
+            vision_modules = [
+                (path, found) for path in vision_paths if (found := self._resolve_module_path(module, path)) is not None
+            ]
+            if not vision_modules:
+                raise ValueError(
+                    "model.freeze_vision_tower=True but no known vision module was found. "
+                    f"Tried: {', '.join(vision_paths)}"
+                )
+            for path, found in vision_modules:
+                changed, total = self._set_requires_grad(
+                    found,
+                    False,
+                    skip_param_ids=projector_param_ids if not freeze_projector else None,
+                )
+                freeze_messages.append(
+                    f"vision_tower path={path} frozen_params={total} changed_params={changed}"
+                )
+
+        if freeze_projector:
+            if not projector_modules:
+                raise ValueError(
+                    "model.freeze_multi_modal_projector=True but no known projector module was found. "
+                    f"Tried: {', '.join(projector_paths)}"
+                )
+            for path, found in projector_modules:
+                changed, total = self._set_requires_grad(found, False)
+                freeze_messages.append(f"projector path={path} frozen_params={total} changed_params={changed}")
+
+        trainable = sum(parameter.numel() for parameter in module.parameters() if parameter.requires_grad)
+        total_params = sum(parameter.numel() for parameter in module.parameters())
+        logger.info(
+            "Applied multimodal freeze before FSDP: %s; trainable_params=%s total_params=%s",
+            "; ".join(freeze_messages),
+            trainable,
+            total_params,
+        )
+
     def _build_fsdp_module(self, module):
         # TODO(ziheng): need to improve
         from torch.distributed.fsdp import CPUOffload, MixedPrecision
@@ -539,6 +635,8 @@ class FSDPEngine(BaseEngine):
         # Apply LoRA adapters if low-rank adaptation is enabled
         if self._is_lora:
             module = self._build_lora_module(module)
+
+        self._freeze_multimodal_modules(module)
 
         # Apply QAT before FSDP wrapping (training only)
         if self._qat_enabled and not self.engine_config.forward_only:

@@ -119,6 +119,12 @@ class HFModelConfig(BaseConfig):
 
     use_remove_padding: bool = True
 
+    # Freeze VLM vision tower parameters before FSDP wrapping.
+    freeze_vision_tower: bool = False
+
+    # Freeze VLM multimodal projector parameters before FSDP wrapping.
+    freeze_multi_modal_projector: bool = False
+
     # TODO: unify fsdp and megatron lora config
     # fsdp lora related. We may setup a separate config later
     lora_rank: int = 0

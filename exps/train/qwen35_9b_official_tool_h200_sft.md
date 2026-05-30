@@ -32,10 +32,22 @@ Stable launcher:
 bash exps/train/run_qwen35_official_tool_h200_sft.sh formal
 ```
 
+Frozen launchers:
+
+```text
+exps/train/run_qwen35_official_tool_h200_sft_lora_20260529.sh
+exps/train/run_qwen35_official_tool_h200_sft_full_freeze_20260530.sh
+```
+
+Use the frozen launcher for any run that should remain comparable with a
+specific experiment version. The moving launcher
+`run_qwen35_official_tool_h200_sft.sh` keeps the current default profile.
+
 Current stable defaults:
 
 ```text
 MODEL_PATH=/mnt/localssd/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a
+FINETUNING_TYPE=lora
 TRAIN_BATCH_SIZE=32
 MICRO_BATCH_SIZE_PER_GPU=1
 MAX_LENGTH=32768
@@ -55,15 +67,35 @@ SAVE_FREQ=100
 ADD_VISION_ID=True
 WHOLE_CONVERSATION_TOKENIZE=True
 READ_PARQUET_DTYPE_BACKEND=default
+FREEZE_VISION_TOWER=False
+FREEZE_MULTI_MODAL_PROJECTOR=False
 ```
 
 Official Mini-o3 reference uses Qwen2.5-VL-7B-Instruct, cold-start SFT data, image pixels 40000/2000000, cutoff 32768, lr 1e-5, 3 epochs, cosine schedule, warmup 0.1, bf16, and frozen vision/projector. Local adaptation keeps the core length/pixel/lr/epoch schedule but uses Qwen3.5-9B official tool-call formatting and language-side LoRA to align with the later RL/vLLM path. Reference: https://github.com/Mini-o3/Mini-o3
+
+Full-tuning probe mode:
+
+```bash
+FINETUNING_TYPE=full bash exps/train/run_qwen35_official_tool_h200_sft.sh formal
+```
+
+In `FINETUNING_TYPE=full`, the wrapper sets `LORA_RANK=0` and follows the
+official Mini-o3 SFT freeze policy by default:
+
+```text
+FREEZE_VISION_TOWER=True
+FREEZE_MULTI_MODAL_PROJECTOR=True
+```
+
+For Qwen3.5 HF models this freezes `model.visual` and its `merger` projector
+before FSDP wrapping, leaving `model.language_model` and `lm_head` trainable.
 
 ## Runs
 
 ### qwen35_9b_official_tool_h200_sft_20260529_235552
 
 - Status: completed 681/681 steps.
+- Frozen launcher: `exps/train/run_qwen35_official_tool_h200_sft_lora_20260529.sh`
 - Tmux: `minio3_sft_formal_20260529_235552` completed and exited.
 - Log: `logs/qwen35_9b_official_tool_h200_sft_20260529_235552.log`
 - Save dir: `save/qwen35_9b_official_tool_h200_sft_20260529_235552`
@@ -75,6 +107,15 @@ Official Mini-o3 reference uses Qwen2.5-VL-7B-Instruct, cold-start SFT data, ima
 - Peak memory by step 8: about 64.94GB allocated and 100.11GB reserved.
 - Final step: loss 0.47966, grad norm 0.23977, lr 0, global tokens 95604.
 - Final checkpoint: `save/qwen35_9b_official_tool_h200_sft_20260529_235552/global_step_681`
+
+### qwen35_9b_official_tool_h200_sft_full_freeze
+
+- Status: ready to run.
+- Frozen launcher: `exps/train/run_qwen35_official_tool_h200_sft_full_freeze_20260530.sh`
+- Purpose: repeat SFT with full language-model tuning instead of LoRA.
+- Freeze policy: `FREEZE_VISION_TOWER=True`, `FREEZE_MULTI_MODAL_PROJECTOR=True`.
+- LoRA: disabled with `LORA_RANK=0`, `LORA_ALPHA=0`.
+- Intended comparison target: `qwen35_9b_official_tool_h200_sft_20260529_235552`.
 
 ### qwen35_9b_official_tool_h200_sft_20260529_235314
 
