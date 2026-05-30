@@ -29,6 +29,10 @@ The cross-run summary is:
 exps/train/qwen35_official_tool_h200_rl_experiment_index.md
 ```
 
+Keep lightweight experiment summaries and curves in `exps/train/`. Large
+generated examples, image assets, and per-run launch records live under ignored
+`artifacts/train/`.
+
 ## Preflight
 
 Run from the repo root:
