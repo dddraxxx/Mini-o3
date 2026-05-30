@@ -134,6 +134,31 @@ def test_self_judge_relaxed_answer_prefers_last_complete_sentence(monkeypatch):
     assert result["prediction"] == "The person is wearing red clothes."
 
 
+def test_self_judge_relaxed_answer_strips_final_answer_marker(monkeypatch):
+    captured = {}
+
+    def fake_judge(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return 1, "Yes", 1
+
+    monkeypatch.setattr(minio3_reward, "_query_llm_judge", fake_judge)
+
+    result = minio3_reward.compute_score(
+        data_source="visual_probe_easy",
+        solution_str="<think>I inspected the image.</think> **Final answer:** VINTAGE.",
+        ground_truth="VINTAGE",
+        extra_info={"question": "What is written at the bottom?"},
+        self_judge_reward=True,
+        self_judge_provider="deepseek",
+        self_judge_relaxed_answer=True,
+    )
+
+    assert result["prediction"] == "VINTAGE."
+    assert "Pred: VINTAGE." in captured["prompt"]
+    assert "Pred: Final answer:" not in captured["prompt"]
+    assert "Pred: **Final answer:" not in captured["prompt"]
+
+
 def test_self_judge_error_fields_are_stable(monkeypatch):
     def failing_judge(**kwargs):
         raise RuntimeError("quota exceeded")

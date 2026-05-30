@@ -79,10 +79,16 @@ def _strip_plain_final_text(text: str) -> str | None:
     return text or None
 
 
-def _last_sentence_or_answer_marker(text: str) -> str:
+def _strip_answer_marker_prefix(text: str) -> str:
     marker_matches = list(ANSWER_MARKER_RE.finditer(text))
     if marker_matches:
-        text = text[marker_matches[-1].end() :].strip()
+        text = text[marker_matches[-1].end() :]
+        text = re.sub(r"^(?:[*_`]+\s+)+", "", text)
+    return text.strip()
+
+
+def _last_sentence_or_answer_marker(text: str) -> str:
+    text = _strip_answer_marker_prefix(text)
     complete_sentences = re.findall(r"[^.!?。！？]+[.!?。！？]+(?:[\"'”’)\]]+)?", text)
     if complete_sentences:
         return complete_sentences[-1].strip()

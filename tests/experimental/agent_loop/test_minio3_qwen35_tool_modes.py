@@ -4,6 +4,7 @@ import json
 from PIL import Image
 
 from examples.minio3.minio3_reward import compute_score
+from examples.minio3.preprocess_visualprobe import OFFICIAL_ZOOM_FINAL_SENTENCE_PROMPT_SUITE
 from examples.minio3.preprocess_visualprobe import LEGACY_GROUNDING_PROMPT_SUITE
 from examples.minio3.preprocess_visualprobe import OFFICIAL_ZOOM_PROMPT_SUITE
 from examples.minio3.preprocess_visualprobe import OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE
@@ -78,6 +79,16 @@ def test_preprocess_prompt_suites_keep_legacy_and_official_separate():
         tool_prompt_suite=OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE,
         official_tool_name="image_zoom_in_tool",
     )
+    final_sentence = _convert_row(
+        row,
+        0,
+        "train",
+        "/tmp/images",
+        min_pixels=1,
+        max_pixels=100,
+        tool_prompt_suite=OFFICIAL_ZOOM_FINAL_SENTENCE_PROMPT_SUITE,
+        official_tool_name="image_zoom_in_tool",
+    )
 
     assert "<grounding>" in legacy["prompt"][0]["content"]
     assert legacy["agent_name"] == "mini_o3_tool_agent"
@@ -93,6 +104,14 @@ def test_preprocess_prompt_suites_keep_legacy_and_official_separate():
     assert plain_question["prompt"][1]["content"] == "<image>\nWhat is on top?"
     assert plain_question["agent_name"] == "tool_agent"
     assert plain_question["extra_info"]["tool_selection"] == ["image_zoom_in_tool"]
+
+    assert "<answer>" not in final_sentence["prompt"][0]["content"]
+    assert "</answer>" not in final_sentence["prompt"][0]["content"]
+    assert "Final answer: <short answer>." in final_sentence["prompt"][0]["content"]
+    assert "Do not add explanation" in final_sentence["prompt"][0]["content"]
+    assert final_sentence["agent_name"] == "tool_agent"
+    assert final_sentence["extra_info"]["tool_prompt_suite"] == OFFICIAL_ZOOM_FINAL_SENTENCE_PROMPT_SUITE
+    assert final_sentence["extra_info"]["tool_selection"] == ["image_zoom_in_tool"]
 
 
 def test_qwen3_xml_parser_accepts_official_zoom_tool_call():

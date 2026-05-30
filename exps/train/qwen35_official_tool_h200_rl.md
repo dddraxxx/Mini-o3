@@ -20,6 +20,7 @@ reproducible even when the moving entrypoint changes:
 ```text
 exps/train/run_qwen35_official_tool_h200_rl_t6_200step_20260526.sh
 exps/train/run_qwen35_official_tool_h200_rl_t12_100step_20260527.sh
+exps/train/run_qwen35_official_tool_h200_rl_t12_no_exceed_mask_100step_20260528.sh
 ```
 
 The cross-run summary is:
@@ -99,7 +100,7 @@ SELF_JUDGE_TIMEOUT=60
 The formal H200 profile uses:
 
 ```text
-MINIO3_TOOL_PROMPT_SUITE=qwen35_official_zoom_tool_plain_question
+MINIO3_TOOL_PROMPT_SUITE=qwen35_official_zoom_tool_final_sentence
 MINIO3_OFFICIAL_TOOL_NAME=image_zoom_in_tool
 ROLLOUT_MULTI_TURN_FORMAT=qwen3_coder
 MAX_PROMPT_LENGTH=16384
@@ -129,6 +130,8 @@ MAX_NUM_BATCHED_TOKENS=65536
 MAX_NUM_SEQS=256
 PROMPT_ADMISSION_ENABLE=True
 PROMPT_ADMISSION_POOL_SIZE=160
+MINIO3_IGNORE_EXCEED=False
+MINIO3_IGNORE_VOID=False
 ACTOR_LR=1e-6
 TOTAL_TRAINING_STEPS=100
 SAVE_LORA_ONLY=True
@@ -137,6 +140,20 @@ TEST_FREQ=10
 MINIO3_RAY_STARTUP_RETRIES=2
 MINIO3_RAY_STARTUP_RETRY_DELAY_S=15
 ```
+
+`qwen35_official_zoom_tool_final_sentence` keeps the same official zoom-tool
+interface as the clean plain-question prompt, but asks the model to end the
+final response with one standalone sentence:
+
+```text
+Final answer: <short answer>.
+```
+
+The intent is to make the existing relaxed reward extraction, which prefers an
+explicit `Final answer:` marker and then the last complete sentence, align with
+the prompt instead of judging a verbose explanatory tail. The marker is only
+used to locate the answer; it is stripped before writing `prediction` or sending
+`Pred:` to the DeepSeek judge.
 
 `TRAIN_BATCH_SIZE` must be divisible by `AGENT_NUM_WORKERS` only when prompt
 admission is disabled. With prompt admission enabled, prompt groups are admitted

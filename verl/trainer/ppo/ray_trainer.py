@@ -20,6 +20,7 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import json
 import os
+import hashlib
 import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -557,6 +558,41 @@ class RayPPOTrainer:
         return paths
 
     @staticmethod
+    def _stable_uid_from_sample(sample_non_tensor_batch: dict, fallback_index: int) -> str:
+        """Build a stable prompt uid for old datasets that do not carry top-level uid."""
+        uid = sample_non_tensor_batch.get("uid")
+        if uid is not None and str(uid).strip():
+            return str(uid)
+
+        data_source = str(sample_non_tensor_batch.get("data_source") or "unknown")
+        extra_info = sample_non_tensor_batch.get("extra_info") or {}
+        if isinstance(extra_info, dict):
+            for key in ("uid", "doc_id", "index", "id"):
+                value = extra_info.get(key)
+                if value is not None and str(value).strip():
+                    return f"{data_source}:{value}"
+
+        reward_model = sample_non_tensor_batch.get("reward_model") or {}
+        ground_truth = reward_model.get("ground_truth") if isinstance(reward_model, dict) else None
+        payload = {
+            "data_source": data_source,
+            "image_paths": RayPPOTrainer._extract_image_paths(sample_non_tensor_batch),
+            "prompt": sample_non_tensor_batch.get("raw_prompt") or sample_non_tensor_batch.get("prompt"),
+            "ground_truth": ground_truth,
+        }
+        if not any(payload.values()):
+            payload["fallback_index"] = fallback_index
+        digest = hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8"))
+        return f"{data_source}:{digest.hexdigest()[:16]}"
+
+    @staticmethod
+    def _stable_uids_from_batch(batch: DataProto) -> np.ndarray:
+        return np.array(
+            [RayPPOTrainer._stable_uid_from_sample(item.non_tensor_batch, idx) for idx, item in enumerate(batch)],
+            dtype=object,
+        )
+
+    @staticmethod
     def _write_train_samples_jsonl(entries: list[dict], output_path: str, limit: int | None):
         """Append Mini-o3-compatible training sample rows to a single JSONL file."""
         if limit is not None and limit >= 0:
@@ -794,9 +830,7 @@ class RayPPOTrainer:
     def _prepare_prompt_admission_groups(self, batch_dict: dict[str, Any]) -> list[dict[str, Any]]:
         prompt_input_batch: DataProto = DataProto.from_single_dict(batch_dict)
         prompt_input_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-        prompt_input_batch.non_tensor_batch["uid"] = np.array(
-            [str(uuid.uuid4()) for _ in range(len(prompt_input_batch.batch))], dtype=object
-        )
+        prompt_input_batch.non_tensor_batch["uid"] = self._stable_uids_from_batch(prompt_input_batch)
         rollout_prompt_batch = self._get_gen_batch(prompt_input_batch)
         rollout_prompt_batch.meta_info["global_steps"] = self.global_steps
 
@@ -1051,10 +1085,7 @@ class RayPPOTrainer:
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
-            if "uid" not in test_batch.non_tensor_batch:
-                test_batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
-                )
+            test_batch.non_tensor_batch["uid"] = self._stable_uids_from_batch(test_batch)
 
             # repeat test batch
             test_batch = test_batch.repeat(
@@ -1909,9 +1940,7 @@ class RayPPOTrainer:
                 batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
 
                 # add uid to batch
-                batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
-                )
+                batch.non_tensor_batch["uid"] = self._stable_uids_from_batch(batch)
 
                 gen_batch = self._get_gen_batch(batch)
 
