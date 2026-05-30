@@ -75,6 +75,7 @@ VAL_MAX_ASSISTANT_TURNS=${VAL_MAX_ASSISTANT_TURNS:-12}
 VAL_MAX_USER_TURNS=${VAL_MAX_USER_TURNS:-12}
 ROLLOUT_MULTI_TURN_FORMAT=${ROLLOUT_MULTI_TURN_FORMAT:-minio3_grounding}
 ROLLOUT_AGENT_LOOP=${ROLLOUT_AGENT_LOOP:-mini_o3_tool_agent}
+ADD_VISION_ID=${ADD_VISION_ID:-True}
 VAL_N=${VAL_N:-1}
 VAL_DO_SAMPLE=${VAL_DO_SAMPLE:-False}
 VAL_TEMPERATURE=${VAL_TEMPERATURE:-0}
@@ -145,6 +146,7 @@ DATA=(
     data.max_response_length=${MAX_RESPONSE_LENGTH}
     data.filter_overlong_prompts=True
     data.truncation='error'
+    +data.apply_chat_template_kwargs.add_vision_id=${ADD_VISION_ID}
     data.tool_config_path=null
     data.function_tool_path=null
 )

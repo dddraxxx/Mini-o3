@@ -7,7 +7,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 PROJECT_DIR=${PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}
 SNAPSHOT_DIR=${SNAPSHOT_DIR:-$PROJECT_DIR/exps/eval/snapshots/20260525_qwen35_vp}
-VARIANT=${1:-plain_question}
+VARIANT=${1:-final_sentence}
 TIMESTAMP=${TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}
 
 LOCAL_QWEN35_SNAPSHOT=/mnt/localssd/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a
@@ -26,6 +26,12 @@ case "$VARIANT" in
     RUN_PREFIX=visualprobe_full515_qwen35_9b_official_tool_plainq_minio3agent_localpath_deepseek_relaxed
     DATA_DIR_DEFAULT="$PROJECT_DIR/data/minio3_visualprobe_val_plain_question515_minio3agent_localpath"
     ;;
+  final_sentence|final|fs)
+    CANONICAL_VARIANT=final_sentence
+    TOOL_PROMPT_SUITE=qwen35_official_zoom_tool_final_sentence
+    RUN_PREFIX=visualprobe_full515_qwen35_9b_official_tool_finalsentence_minio3agent_localpath_deepseek_relaxed
+    DATA_DIR_DEFAULT="$PROJECT_DIR/data/minio3_visualprobe_val_final_sentence515_minio3agent_localpath"
+    ;;
   answer_tag|answer|tag)
     CANONICAL_VARIANT=answer_tag
     TOOL_PROMPT_SUITE=qwen35_official_zoom_tool
@@ -33,7 +39,7 @@ case "$VARIANT" in
     DATA_DIR_DEFAULT="$PROJECT_DIR/data/minio3_visualprobe_val_smoke515"
     ;;
   *)
-    echo "usage: $0 [plain_question|answer_tag]" >&2
+    echo "usage: $0 [plain_question|final_sentence|answer_tag]" >&2
     exit 2
     ;;
 esac
@@ -101,6 +107,7 @@ export MINIO3_OFFICIAL_TOOL_NAME=${MINIO3_OFFICIAL_TOOL_NAME:-image_zoom_in_tool
 export MINIO3_AGENT_LOOP=${MINIO3_AGENT_LOOP:-mini_o3_tool_agent}
 export ROLLOUT_AGENT_LOOP=${ROLLOUT_AGENT_LOOP:-mini_o3_tool_agent}
 export ROLLOUT_MULTI_TURN_FORMAT=${ROLLOUT_MULTI_TURN_FORMAT:-qwen3_coder}
+export ADD_VISION_ID=${ADD_VISION_ID:-True}
 export REWARD_FN_PATH=${REWARD_FN_PATH:-$SNAPSHOT_DIR/minio3_reward.py}
 export PROJECT_NAME=${PROJECT_NAME:-Mini-o3-vp-formal}
 export LOG_VAL_GENERATIONS=${LOG_VAL_GENERATIONS:-0}

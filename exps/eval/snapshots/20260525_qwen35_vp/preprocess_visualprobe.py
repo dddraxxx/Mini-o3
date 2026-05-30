@@ -15,10 +15,12 @@ import datasets
 LEGACY_GROUNDING_PROMPT_SUITE = "qwen35_minio3_legacy_grounding"
 OFFICIAL_ZOOM_PROMPT_SUITE = "qwen35_official_zoom_tool"
 OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE = "qwen35_official_zoom_tool_plain_question"
+OFFICIAL_ZOOM_FINAL_SENTENCE_PROMPT_SUITE = "qwen35_official_zoom_tool_final_sentence"
 PROMPT_SUITES = {
     LEGACY_GROUNDING_PROMPT_SUITE,
     OFFICIAL_ZOOM_PROMPT_SUITE,
     OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE,
+    OFFICIAL_ZOOM_FINAL_SENTENCE_PROMPT_SUITE,
 }
 
 TOOL_CROP_SYSTEM_PROMPT = (
@@ -53,9 +55,29 @@ OFFICIAL_ZOOM_PLAIN_QUESTION_SYSTEM_PROMPT = (
     "4. Review the zoom observation before deciding whether another zoom is needed."
 )
 
+OFFICIAL_ZOOM_FINAL_SENTENCE_SYSTEM_PROMPT = (
+    "You are a visual research assistant. Answer the user's image question by examining the image "
+    "carefully and using the available zoom tool when visual details are unclear.\n\n"
+    "For each question, follow this loop:\n"
+    "1. First inspect the image with the user's question in mind.\n"
+    "2. State what is visible and what needs closer inspection.\n"
+    "3. If needed, call the zoom tool on a precise region.\n"
+    "4. Review the zoom observation before deciding whether another zoom is needed.\n\n"
+    "When you have enough evidence, stop calling tools and answer the question directly.\n"
+    "Your final response must end with exactly one standalone final sentence:\n\n"
+    "Final answer: <short answer>.\n\n"
+    'Put only the answer requested by the question after "Final answer:".\n'
+    "Do not add explanation, evidence, confidence, or any text after the final sentence.\n"
+    "Preserve exact spelling, numbers, units, and capitalization when they are visible in the image."
+)
+
 
 def _is_official_zoom_suite(tool_prompt_suite: str) -> bool:
-    return tool_prompt_suite in {OFFICIAL_ZOOM_PROMPT_SUITE, OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE}
+    return tool_prompt_suite in {
+        OFFICIAL_ZOOM_PROMPT_SUITE,
+        OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE,
+        OFFICIAL_ZOOM_FINAL_SENTENCE_PROMPT_SUITE,
+    }
 
 
 def _system_prompt_for_suite(tool_prompt_suite: str) -> str:
@@ -65,6 +87,8 @@ def _system_prompt_for_suite(tool_prompt_suite: str) -> str:
         return OFFICIAL_ZOOM_SYSTEM_PROMPT
     if tool_prompt_suite == OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE:
         return OFFICIAL_ZOOM_PLAIN_QUESTION_SYSTEM_PROMPT
+    if tool_prompt_suite == OFFICIAL_ZOOM_FINAL_SENTENCE_PROMPT_SUITE:
+        return OFFICIAL_ZOOM_FINAL_SENTENCE_SYSTEM_PROMPT
     raise ValueError(f"Unsupported tool prompt suite: {tool_prompt_suite!r}")
 
 
