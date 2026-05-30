@@ -1,6 +1,6 @@
 # Qwen3.5-9B VisualProbe Full Evaluation
 
-This records the two full VisualProbe validation runs used as the current Qwen3.5-9B baseline for Mini-o3 with the official zoom tool surface.
+This records the full VisualProbe validation runs used as the current Qwen3.5-9B baseline and SFT comparisons for Mini-o3 with the official zoom tool surface.
 
 ## Dataset
 
@@ -35,6 +35,7 @@ The eval is not bit-stable: model sampling uses temperature 1.0 and the final sc
 | Run | Prompt suite | Overall | Easy | Medium | Hard | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | `visualprobe_full515_qwen35_9b_official_tool_plainq_minio3agent_localpath_deepseek_relaxed_20260525_131313` | `qwen35_official_zoom_tool_plain_question` | 191/515 = 37.09% | 74/141 = 52.48% | 89/268 = 33.21% | 28/106 = 26.42% | Clean prompt: image then question, no answer tag instruction |
+| `visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_plainq_deepseek_20260530_1251` | `qwen35_official_zoom_tool_plain_question` | 130/515 = 25.24% | 51/141 = 36.17% | 66/268 = 24.63% | 13/106 = 12.26% | Full-language SFT, frozen vision/projector, global batch 32 |
 | `visualprobe_full515_qwen35_9b_official_tool_deepseek_relaxed_retry_20260525_024413` | `qwen35_official_zoom_tool` | 182/515 = 35.34% | 75/141 = 53.19% | 84/268 = 31.34% | 23/106 = 21.70% | Earlier answer-tag prompt suite |
 
 ## Plain-Question Run Details
@@ -55,6 +56,26 @@ Additional stats:
 - Exceed reason: `assistant_turn_limit_with_tool_call=2`
 - Tool call mean: Easy `2.525`, Medium `2.396`, Hard `3.302`
 - Number of turns: min `2`, max `24`, mean `7.227`
+
+## SFT Full-Freeze Run Details
+
+- Model: `save/qwen35_9b_official_tool_h200_sft_full_freeze_20260530_101126/global_step_681_hf`
+- Data dir: `data/minio3_visualprobe_val_plain_question515_minio3agent_localpath`
+- Log: `logs/visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_plainq_deepseek_20260530_1251.log`
+- Run dir: `save/visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_plainq_deepseek_20260530_1251`
+- Generations: `save/visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_plainq_deepseek_20260530_1251/validation_generations/0.jsonl`
+- Metrics: `save/visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_plainq_deepseek_20260530_1251/train_step_metrics.jsonl`
+- Exit: clean, `exit 0`
+
+Additional stats:
+
+- Prediction source: mostly `plain_final`; answer tag is not requested in this prompt suite.
+- Answer tag present: `0/515`
+- Tool call mean: Easy `6.752`, Medium `6.563`, Hard `9.566`
+- DeepSeek judge attempts mean: Easy `0.716`, Medium `0.761`, Hard `0.396`
+- Number of turns: min `2`, max `24`, mean `15.810`
+- Generation output length in `validation_generations/0.jsonl`: median about 10.4k characters, max about 120k characters.
+- Comparison to the base plain-question run: lower score on all splits and substantially more tool calls/turns, indicating the global-batch-32 full SFT learned the tool-use trajectory style but became less efficient on VP.
 
 ## Answer-Tag Run Details
 
