@@ -11,11 +11,16 @@ from typing import Any
 ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 GROUNDING_RE = re.compile(r"<grounding>(.*?)</grounding>", re.DOTALL)
 TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+ANSWER_MARKER_RE = re.compile(r"(?:final\s+answer|answer|答案)\s*[:：]\s*", re.IGNORECASE)
+TEXT_UNIT_RE = re.compile(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+(?:[-'][A-Za-z0-9_]+)*|[^\w\s]", re.UNICODE)
 SYSTEM_PROMPT = "Judge answer equivalence. Reply only Yes or No."
 QUERY_PROMPT = """Q: {question}
 GT: {ground_truth}
 Pred: {prediction}
 Equivalent? Answer Yes or No."""
+PLAIN_ANSWER_MIN_UNITS = 20
+PLAIN_ANSWER_MAX_UNITS = 256
+PLAIN_ANSWER_GT_UNIT_MULTIPLIER = 2
 
 
 class JudgeConfigError(RuntimeError):
@@ -33,7 +38,35 @@ def _extract_tagged_answer(text: str) -> str | None:
     return matches[-1].strip()
 
 
-def _extract_plain_final_answer(text: str) -> str | None:
+def _text_units(text: Any) -> list[re.Match[str]]:
+    return list(TEXT_UNIT_RE.finditer(str(text or "")))
+
+
+def _count_text_units(text: Any) -> int:
+    return len(_text_units(text))
+
+
+def _last_n_text_units(text: str, n_units: int) -> str:
+    text = str(text or "")
+    n_units = max(int(n_units), 0)
+    if not text or n_units == 0:
+        return ""
+
+    units = _text_units(text)
+    if len(units) <= n_units:
+        return text
+    return text[units[-n_units].start() :].strip()
+
+
+def _plain_answer_unit_cap(ground_truth: Any) -> int:
+    gt_units = _count_text_units(ground_truth)
+    return max(
+        PLAIN_ANSWER_MIN_UNITS,
+        min(PLAIN_ANSWER_MAX_UNITS, PLAIN_ANSWER_GT_UNIT_MULTIPLIER * max(gt_units, 1)),
+    )
+
+
+def _strip_plain_final_text(text: str) -> str | None:
     text = str(text or "")
     if not text.strip():
         return None
@@ -46,12 +79,37 @@ def _extract_plain_final_answer(text: str) -> str | None:
     return text or None
 
 
-def _extract_answer(text: str, *, relaxed: bool = False) -> tuple[str | None, str]:
+def _strip_answer_marker_prefix(text: str) -> str:
+    marker_matches = list(ANSWER_MARKER_RE.finditer(text))
+    if marker_matches:
+        text = text[marker_matches[-1].end() :]
+        text = re.sub(r"^(?:[*_`]+\s+)+", "", text)
+    return text.strip()
+
+
+def _last_sentence_or_answer_marker(text: str) -> str:
+    text = _strip_answer_marker_prefix(text)
+    complete_sentences = re.findall(r"[^.!?。！？]+[.!?。！？]+(?:[\"'”’)\]]+)?", text)
+    if complete_sentences:
+        return complete_sentences[-1].strip()
+    return text.strip()
+
+
+def _extract_plain_final_answer(text: str, ground_truth: Any) -> str | None:
+    text = _strip_plain_final_text(text)
+    if text is None:
+        return None
+    text = _last_sentence_or_answer_marker(text)
+    text = _last_n_text_units(text, _plain_answer_unit_cap(ground_truth))
+    return text or None
+
+
+def _extract_answer(text: str, *, relaxed: bool = False, ground_truth: Any = None) -> tuple[str | None, str]:
     tagged = _extract_tagged_answer(text)
     if tagged is not None:
         return tagged, "answer_tag"
     if relaxed:
-        plain = _extract_plain_final_answer(text)
+        plain = _extract_plain_final_answer(text, ground_truth)
         if plain is not None:
             return plain, "plain_final"
     return None, "missing"
@@ -248,7 +306,11 @@ def compute_score(
     relaxed_answer = _truthy(self_judge_relaxed_answer) or _truthy(
         os.environ.get("MINIO3_RELAXED_ANSWER_EXTRACTION", False)
     )
-    prediction, prediction_source = _extract_answer(solution_str, relaxed=relaxed_answer)
+    prediction, prediction_source = _extract_answer(
+        solution_str,
+        relaxed=relaxed_answer,
+        ground_truth=ground_truth,
+    )
     rule_acc = 0.0 if prediction is None else _matches_choice_or_exact(prediction, ground_truth)
     fmt = _format_score(solution_str)
     tool_call_count = _tool_call_count(solution_str or "")
