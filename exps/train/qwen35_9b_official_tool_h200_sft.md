@@ -128,7 +128,7 @@ before FSDP wrapping, leaving `model.language_model` and `lm_head` trainable.
 - Final step metrics: grad norm 1.76562, lr 0, total tokens 0.080253B.
 - Peak memory at final step: 72.62GB allocated, 137.16GB reserved.
 
-### qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok48k
+### qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok32k
 
 - Status: next-run candidate; not launched yet.
 - Frozen launcher: `exps/train/run_qwen35_official_tool_h200_sft_full_freeze_gbs128_20260530.sh`
@@ -136,7 +136,8 @@ before FSDP wrapping, leaving `model.language_model` and `lm_head` trainable.
 - Main change from `qwen35_9b_official_tool_h200_sft_full_freeze_20260530_101126`: `TRAIN_BATCH_SIZE=128`.
 - With 7267 rows, 8-way DP, and dataloader drop-last behavior, expected steps are about 56 per epoch and 168 total for 3 epochs.
 - `USE_DYNAMIC_BSZ=True` means `MICRO_BATCH_SIZE_PER_GPU` is not the main per-forward memory knob in this code path. The actual dynamic micro-batch sizing is controlled by `MAX_TOKEN_LEN_PER_GPU`.
-- Candidate token budget is `MAX_TOKEN_LEN_PER_GPU=49152`. Current full-freeze run at 32768 has reached about 69.55GB peak allocated and 136.53GB reserved on H200; 49152 is a conservative first increase, while 65536 is likely too close to the memory ceiling for a first formal attempt.
+- Candidate token budget is reverted to the successful value `MAX_TOKEN_LEN_PER_GPU=32768`.
+- The attempted `tok48k` run `qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok48k_20260530_131313` failed at step 45 during backward with rank-1 CUDA OOM while trying to allocate 25.50GiB; it completed only through logged step 44 and produced no checkpoint because `SAVE_FREQ=50`.
 - `MICRO_BATCH_SIZE_PER_GPU=2` is recorded for compatibility and for a possible non-dynamic fallback, but under dynamic batching the real effect comes from the token budget above.
 - LR/schedule remains `LR=1e-5`, cosine, warmup 0.1, 3 epochs. Do not scale LR just because the batch is larger unless we intentionally run a separate learning-rate ablation.
 - `SAVE_FREQ=50`, giving checkpoints around steps 50, 100, 150, and final.

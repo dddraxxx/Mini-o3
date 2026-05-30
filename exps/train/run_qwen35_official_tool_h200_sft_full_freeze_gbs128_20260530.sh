@@ -6,7 +6,7 @@
 # - vision/projector freeze: enabled, matching official Mini-o3 SFT policy
 # - global batch size: 128, matching the paper-style 4-node effective batch target
 # - dynamic micro-batching: enabled
-# - effective per-forward size knob: MAX_TOKEN_LEN_PER_GPU=49152
+# - effective per-forward size knob: MAX_TOKEN_LEN_PER_GPU=32768
 # - lr: 1e-5, cosine, warmup 0.1, 3 epochs
 
 set -euo pipefail
@@ -17,7 +17,7 @@ if (($# > 0)); then
   shift
 fi
 
-export RUN_PREFIX=${RUN_PREFIX:-qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok48k}
+export RUN_PREFIX=${RUN_PREFIX:-qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok32k}
 export FINETUNING_TYPE=${FINETUNING_TYPE:-full}
 export LORA_RANK=${LORA_RANK:-0}
 export LORA_ALPHA=${LORA_ALPHA:-0}
@@ -27,7 +27,7 @@ export FREEZE_MULTI_MODAL_PROJECTOR=${FREEZE_MULTI_MODAL_PROJECTOR:-True}
 export TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-128}
 export MICRO_BATCH_SIZE_PER_GPU=${MICRO_BATCH_SIZE_PER_GPU:-2}
 export MAX_LENGTH=${MAX_LENGTH:-32768}
-export MAX_TOKEN_LEN_PER_GPU=${MAX_TOKEN_LEN_PER_GPU:-49152}
+export MAX_TOKEN_LEN_PER_GPU=${MAX_TOKEN_LEN_PER_GPU:-32768}
 export USE_DYNAMIC_BSZ=${USE_DYNAMIC_BSZ:-True}
 export SP_SIZE=${SP_SIZE:-1}
 export FSDP_STRATEGY=${FSDP_STRATEGY:-fsdp2}
