@@ -38,7 +38,7 @@ SELF_JUDGE_INITIAL_DELAY=${SELF_JUDGE_INITIAL_DELAY:-1.0}
 MODEL_PATH=${MODEL_PATH:-Mini-o3/Mini-o3-7B-SFT}
 if [[ -z "${LORA_TARGET_MODULES:-}" ]]; then
     case "${MODEL_PATH,,}" in
-        *qwen3.5*|*qwen3_5*)
+        *qwen3.5*|*qwen3_5*|*qwen35*)
             # vLLM Qwen3.5 LoRA currently handles language modules only; avoid GDN fused projections.
             LORA_TARGET_MODULES='.*model\.language_model\.layers\..*\.mlp\.(gate_proj|up_proj|down_proj)$'
             ;;

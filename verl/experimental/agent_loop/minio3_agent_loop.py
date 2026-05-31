@@ -19,10 +19,22 @@ from verl.workers.rollout.replica import TokenOutput
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+FINAL_ANSWER_MARKER_RE = re.compile(
+    r"(?:^|\n)\s*(?:[*_`]+\s*)?(?:final\s+answer|答案)\s*[:：]\s*(?:[*_`]+\s*)?\S.*\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _stage_log(message: str) -> None:
     if os.getenv("MINIO3_STAGE_LOG", "0") == "1":
         logger.warning("[minio3-stage] %s", message)
+
+
+def _has_terminal_final_answer(decoded: str) -> bool:
+    decoded = str(decoded or "").strip()
+    if not decoded:
+        return False
+    return FINAL_ANSWER_MARKER_RE.search(decoded) is not None
 
 
 @register("mini_o3_tool_agent")
@@ -296,7 +308,8 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
             f"(Observation {observation_id}). Continue your reasoning process inside "
             "<think> and </think>. If needed, continue to zoom in on the original image "
             "or any observation by outputting <grounding> and </grounding> as before. "
-            "If the final answer is confirmed, put it inside <answer> and </answer>."
+            "If the final answer is confirmed, end with exactly one sentence: "
+            "Final answer: <short answer>."
         )
 
     def _mark_exceed(self, agent_data: AgentData, reason: str) -> None:
@@ -307,9 +320,9 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
     def _mark_void_if_invalid_final(self, agent_data: AgentData, stop_reason: Any) -> None:
         decoded = self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
         stopped_by_length = "length" in str(stop_reason or "").lower()
-        has_final_answer = re.match(r".*<answer>.*</answer>$", decoded, re.DOTALL) is not None
+        has_final_answer = _has_terminal_final_answer(decoded)
         if stopped_by_length or not has_final_answer:
-            reason = "length" if stopped_by_length else "missing_answer_tag"
+            reason = "length" if stopped_by_length else "missing_final_answer"
             agent_data.extra_fields["void_mask"] = True
             agent_data.extra_fields.setdefault("void_reason", reason)
             _stage_log(f"minio3.void request={agent_data.request_id[:8]} reason={reason}")

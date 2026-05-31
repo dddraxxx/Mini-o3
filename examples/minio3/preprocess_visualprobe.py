@@ -32,7 +32,8 @@ TOOL_CROP_SYSTEM_PROMPT = (
     "where (x0, y0) and (x1, y1) are the top-left and bottom-right coordinates of the region "
     "that you want to zoom in, respectively (suppose the width and height of the image are 1.0), "
     "and 'source' refers to the image that you zoom in and could be either 'original_image' or "
-    "'observation_i'. Once the final answer is confirmed, put it within <answer> and </answer>."
+    "'observation_i'. Once the final answer is confirmed, end with exactly one sentence: "
+    "Final answer: <short answer>."
 )
 
 OFFICIAL_ZOOM_SYSTEM_PROMPT = (
@@ -43,7 +44,7 @@ OFFICIAL_ZOOM_SYSTEM_PROMPT = (
     "2. State what is visible and what needs closer inspection.\n"
     "3. If needed, call the zoom tool on a precise region.\n"
     "4. Review the zoom observation before deciding whether another zoom is needed.\n"
-    "5. When there is enough evidence, give the final answer inside <answer> and </answer>."
+    "5. When there is enough evidence, end with exactly one sentence: Final answer: <short answer>."
 )
 
 OFFICIAL_ZOOM_PLAIN_QUESTION_SYSTEM_PROMPT = (

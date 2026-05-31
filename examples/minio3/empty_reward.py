@@ -6,7 +6,10 @@ import re
 from typing import Any
 
 
-ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+FINAL_ANSWER_MARKER_RE = re.compile(
+    r"(?:[*_`]+\s*)*final\s+answer\s*(?:[*_`]+\s*)*[:：]\s*(?:[*_`]+\s*)*\S",
+    re.IGNORECASE,
+)
 GROUNDING_RE = re.compile(r"<grounding>(.*?)</grounding>", re.DOTALL)
 TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
@@ -21,7 +24,7 @@ def compute_score(
     """Return neutral scores while preserving simple rollout diagnostics."""
     del data_source, ground_truth, extra_info, kwargs
     text = solution_str or ""
-    has_answer = bool(ANSWER_RE.findall(text))
+    has_answer = bool(FINAL_ANSWER_MARKER_RE.search(text))
     grounding_open = text.count("<grounding>")
     grounding_close = text.count("</grounding>")
     tool_call_open = text.count("<tool_call>")

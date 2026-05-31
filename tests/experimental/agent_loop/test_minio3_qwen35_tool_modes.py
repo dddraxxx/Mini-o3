@@ -9,6 +9,7 @@ from examples.minio3.preprocess_visualprobe import LEGACY_GROUNDING_PROMPT_SUITE
 from examples.minio3.preprocess_visualprobe import OFFICIAL_ZOOM_PROMPT_SUITE
 from examples.minio3.preprocess_visualprobe import OFFICIAL_ZOOM_PLAIN_QUESTION_PROMPT_SUITE
 from examples.minio3.preprocess_visualprobe import _convert_row
+from verl.experimental.agent_loop.minio3_agent_loop import _has_terminal_final_answer
 from verl.experimental.agent_loop.tool_agent_loop import ToolAgentLoop
 from verl.experimental.agent_loop.tool_parser import FunctionCall
 from verl.experimental.agent_loop.tool_parser import Qwen3XMLToolParser
@@ -91,6 +92,8 @@ def test_preprocess_prompt_suites_keep_legacy_and_official_separate():
     )
 
     assert "<grounding>" in legacy["prompt"][0]["content"]
+    assert "<answer>" not in legacy["prompt"][0]["content"]
+    assert "Final answer: <short answer>." in legacy["prompt"][0]["content"]
     assert legacy["agent_name"] == "mini_o3_tool_agent"
     assert legacy["extra_info"]["tool_selection"] == ["tool_crop"]
 
@@ -223,12 +226,12 @@ def test_minio3_crop_tool_supports_qwen_agent_zoom_parameters():
 def test_reward_counts_legacy_and_official_tool_calls():
     legacy = compute_score(
         "test",
-        '<think>x</think><grounding>{"bbox_2d":[0,0,1,1]}</grounding><answer>A</answer>',
+        '<think>x</think><grounding>{"bbox_2d":[0,0,1,1]}</grounding>Final answer: A.',
         "A",
     )
     official = compute_score(
         "test",
-        "<think>x</think><tool_call><function=image_zoom_in_tool></function></tool_call><answer>A</answer>",
+        "<think>x</think><tool_call><function=image_zoom_in_tool></function></tool_call>Final answer: A.",
         "A",
     )
 
@@ -236,3 +239,9 @@ def test_reward_counts_legacy_and_official_tool_calls():
     assert official["tool_call_count"] == 1.0
     assert legacy["format_score"] == 1.0
     assert official["format_score"] == 1.0
+
+
+def test_minio3_void_check_accepts_final_answer_marker():
+    assert _has_terminal_final_answer("</think>\n\nFinal answer: The clouds are small.")
+    assert not _has_terminal_final_answer("<think>x</think><answer>The clouds are small.</answer>")
+    assert not _has_terminal_final_answer("</think>\n\nThe clouds are small.")

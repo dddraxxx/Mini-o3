@@ -42,7 +42,7 @@ LORA_RANK=${LORA_RANK:-8}
 LORA_ALPHA=${LORA_ALPHA:-16}
 if [[ -z "${LORA_TARGET_MODULES:-}" ]]; then
     case "${MODEL_PATH,,}" in
-        *qwen3.5*|*qwen3_5*)
+        *qwen3.5*|*qwen3_5*|*qwen35*)
             # vLLM Qwen3.5 LoRA currently handles language modules only; avoid GDN fused projections.
             LORA_TARGET_MODULES='.*model\.language_model\.layers\..*\.mlp\.(gate_proj|up_proj|down_proj)$'
             ;;

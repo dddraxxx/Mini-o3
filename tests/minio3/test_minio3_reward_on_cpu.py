@@ -6,7 +6,7 @@ from examples.minio3 import minio3_reward
 def test_rule_reward_matches_choice_by_default():
     result = minio3_reward.compute_score(
         data_source="visual_probe_easy",
-        solution_str="<think>x</think><answer>(A) red</answer>",
+        solution_str="<think>x</think>Final answer: (A) red.",
         ground_truth="A",
     )
 
@@ -46,7 +46,7 @@ def test_self_judge_overrides_rule_exact_match(monkeypatch):
 
     result = minio3_reward.compute_score(
         data_source="visual_probe_easy",
-        solution_str="<think>x</think><answer>sandals</answer>",
+        solution_str="<think>x</think>Final answer: sandals.",
         ground_truth="flip-flops",
         extra_info={"question": "What footwear is shown?"},
         self_judge_reward=True,
@@ -60,12 +60,11 @@ def test_self_judge_overrides_rule_exact_match(monkeypatch):
     assert result["judge_response"] == "Yes"
 
 
-def test_self_judge_relaxed_answer_uses_plain_final_text(monkeypatch):
-    def fake_judge(**kwargs):
-        assert "Pred: Based on the visual evidence, the animal is a white stork." in kwargs["prompt"]
-        return 1, "Yes", 1
+def test_self_judge_requires_final_answer_marker(monkeypatch):
+    def fail_if_called(**kwargs):
+        raise AssertionError("judge should not be called without Final answer marker")
 
-    monkeypatch.setattr(minio3_reward, "_query_llm_judge", fake_judge)
+    monkeypatch.setattr(minio3_reward, "_query_llm_judge", fail_if_called)
 
     result = minio3_reward.compute_score(
         data_source="visual_probe_easy",
@@ -77,13 +76,13 @@ def test_self_judge_relaxed_answer_uses_plain_final_text(monkeypatch):
         self_judge_relaxed_answer=True,
     )
 
-    assert result["answer_tag_present"] == 0.0
-    assert result["prediction_source"] == "plain_final"
-    assert result["acc"] == 1.0
-    assert result["score"] == 1.0
+    assert result["final_answer_present"] == 0.0
+    assert result["prediction_source"] == "missing"
+    assert result["judge_source"] == "empty_answer"
+    assert result["score"] == 0.0
 
 
-def test_self_judge_relaxed_answer_caps_plain_final_units(monkeypatch):
+def test_self_judge_final_answer_caps_answer_units_from_marker(monkeypatch):
     captured = {}
 
     def fake_judge(**kwargs):
@@ -95,7 +94,7 @@ def test_self_judge_relaxed_answer_caps_plain_final_units(monkeypatch):
     repeated = " ".join(f"word{i}" for i in range(60))
     result = minio3_reward.compute_score(
         data_source="visual_probe_easy",
-        solution_str=f"<think>I inspected the image.</think> {repeated}",
+        solution_str=f"<think>I inspected the image.</think> Final answer: {repeated}",
         ground_truth="blue",
         extra_info={"question": "What color is it?"},
         self_judge_reward=True,
@@ -103,15 +102,15 @@ def test_self_judge_relaxed_answer_caps_plain_final_units(monkeypatch):
         self_judge_relaxed_answer=True,
     )
 
-    assert result["prediction_source"] == "plain_final"
-    assert result["prediction"] == " ".join(f"word{i}" for i in range(40, 60))
+    assert result["prediction_source"] == "final_answer"
+    assert result["prediction"] == " ".join(f"word{i}" for i in range(20))
     assert f"Pred: {result['prediction']}" in captured["prompt"]
-    assert "word39" not in captured["prompt"]
+    assert "word20" not in captured["prompt"]
 
 
-def test_self_judge_relaxed_answer_prefers_last_complete_sentence(monkeypatch):
+def test_self_judge_uses_last_final_answer_marker(monkeypatch):
     def fake_judge(**kwargs):
-        assert "Pred: The person is wearing red clothes." in kwargs["prompt"]
+        assert "Pred: red clothes." in kwargs["prompt"]
         return 1, "Yes", 1
 
     monkeypatch.setattr(minio3_reward, "_query_llm_judge", fake_judge)
@@ -120,9 +119,9 @@ def test_self_judge_relaxed_answer_prefers_last_complete_sentence(monkeypatch):
         data_source="visual_probe_easy",
         solution_str=(
             "<think>I inspected the image.</think> "
-            "The person is wearing red clothes. "
-            "The person is wearing red clothes. "
-            "The person is"
+            "Final answer: blue clothes. "
+            "I corrected my response. "
+            "Final answer: red clothes."
         ),
         ground_truth="red clothes",
         extra_info={"question": "What is the person wearing?"},
@@ -131,7 +130,7 @@ def test_self_judge_relaxed_answer_prefers_last_complete_sentence(monkeypatch):
         self_judge_relaxed_answer=True,
     )
 
-    assert result["prediction"] == "The person is wearing red clothes."
+    assert result["prediction"] == "red clothes."
 
 
 def test_self_judge_relaxed_answer_strips_final_answer_marker(monkeypatch):
@@ -154,6 +153,8 @@ def test_self_judge_relaxed_answer_strips_final_answer_marker(monkeypatch):
     )
 
     assert result["prediction"] == "VINTAGE."
+    assert result["final_answer_present"] == 1.0
+    assert result["format_score"] == 1.0
     assert "Pred: VINTAGE." in captured["prompt"]
     assert "Pred: Final answer:" not in captured["prompt"]
     assert "Pred: **Final answer:" not in captured["prompt"]
@@ -167,7 +168,7 @@ def test_self_judge_error_fields_are_stable(monkeypatch):
 
     result = minio3_reward.compute_score(
         data_source="visual_probe_easy",
-        solution_str="<think>x</think><answer>blue</answer>",
+        solution_str="<think>x</think>Final answer: blue.",
         ground_truth="blue",
         extra_info={"question": "What color is it?"},
         self_judge_reward=True,
@@ -190,9 +191,30 @@ def test_deepseek_judge_requires_api_key(monkeypatch):
     with pytest.raises(minio3_reward.JudgeConfigError, match="DEEPSEEK_API_KEY"):
         minio3_reward.compute_score(
             data_source="visual_probe_easy",
-            solution_str="<think>x</think><answer>A</answer>",
+            solution_str="<think>x</think>Final answer: A.",
             ground_truth="A",
             extra_info={"question": "Pick one."},
             self_judge_reward=True,
             self_judge_provider="deepseek",
         )
+
+
+def test_legacy_xml_answer_is_not_a_valid_prediction(monkeypatch):
+    def fail_if_called(**kwargs):
+        raise AssertionError("judge should not be called for legacy answer tags")
+
+    monkeypatch.setattr(minio3_reward, "_query_llm_judge", fail_if_called)
+
+    result = minio3_reward.compute_score(
+        data_source="visual_probe_easy",
+        solution_str="<think>x</think><answer>A</answer>",
+        ground_truth="A",
+        extra_info={"question": "Pick one."},
+        self_judge_reward=True,
+        self_judge_provider="deepseek",
+        self_judge_relaxed_answer=True,
+    )
+
+    assert result["prediction_source"] == "missing"
+    assert result["final_answer_present"] == 0.0
+    assert result["score"] == 0.0
