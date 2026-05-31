@@ -38,6 +38,8 @@ The eval is not bit-stable: model sampling uses temperature 1.0 and the final sc
 | `visualprobe_full515_qwen35_9b_official_tool_plainq_minio3agent_localpath_deepseek_relaxed_20260525_131313` | `qwen35_official_zoom_tool_plain_question` | 191/515 = 37.09% | 74/141 = 52.48% | 89/268 = 33.21% | 28/106 = 26.42% | Clean prompt: image then question, no answer tag instruction |
 | `visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_plainq_deepseek_20260530_1251` | `qwen35_official_zoom_tool_plain_question` | 130/515 = 25.24% | 51/141 = 36.17% | 66/268 = 24.63% | 13/106 = 12.26% | Full-language SFT, frozen vision/projector, global batch 32 |
 | `visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_finalsentence_deepseek_20260530` | `qwen35_official_zoom_tool_final_sentence` | 139/515 = 26.99% | 57/141 = 40.43% | 66/268 = 24.63% | 16/106 = 15.09% | SFT/RL-aligned final-answer prompt with `ADD_VISION_ID=True` |
+| `visualprobe_full515_qwen35_9b_sft_full_freeze_gbs128_tok32k_gs168_finalsentence_deepseek_ray64_20260530` | `qwen35_official_zoom_tool_final_sentence` | 144/515 = 27.96% | 60/141 = 42.55% | 67/268 = 25.00% | 17/106 = 16.04% | Full-language SFT, frozen vision/projector, global batch 128 |
+| `visualprobe_full515_qwen35_9b_sft_full_freeze_gbs256_tok32k_gs84_finalsentence_deepseek_20260531_rerun1` | `qwen35_official_zoom_tool_final_sentence` | 129/515 = 25.05% | 58/141 = 41.13% | 58/268 = 21.64% | 13/106 = 12.26% | Full-language SFT, frozen vision/projector, global batch 256 |
 | `visualprobe_full515_qwen35_9b_official_tool_deepseek_relaxed_retry_20260525_024413` | `qwen35_official_zoom_tool` | 182/515 = 35.34% | 75/141 = 53.19% | 84/268 = 31.34% | 23/106 = 21.70% | Earlier answer-tag prompt suite |
 
 ## Plain-Question Run Details
@@ -99,6 +101,47 @@ Additional stats:
 - Prediction length after final-answer extraction: mean `15` chars, p95 `75`, max `127`
 - Tool call mean: Easy `5.567`, Medium `5.623`, Hard `7.906`
 - Number of turns: min `2`, max `24`, mean `13.841`
+
+## SFT GBS128 Final-Sentence Run Details
+
+- Model: `save/qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok32k_20260530_143908/global_step_168_hf`
+- Data dir: `data/minio3_visualprobe_val_final_sentence515_minio3agent_localpath`
+- Log: `logs/visualprobe_full515_qwen35_9b_sft_full_freeze_gbs128_tok32k_gs168_finalsentence_deepseek_ray64_20260530.log`
+- Run dir: `save/visualprobe_full515_qwen35_9b_sft_full_freeze_gbs128_tok32k_gs168_finalsentence_deepseek_ray64_20260530`
+- Generations: `save/visualprobe_full515_qwen35_9b_sft_full_freeze_gbs128_tok32k_gs168_finalsentence_deepseek_ray64_20260530/validation_generations/0.jsonl`
+- Metrics: `save/visualprobe_full515_qwen35_9b_sft_full_freeze_gbs128_tok32k_gs168_finalsentence_deepseek_ray64_20260530/train_step_metrics.jsonl`
+- Exit: clean, `exit 0`
+
+Additional stats:
+
+- `Final answer:` present: `430/515`
+- `Picture` labels present: `515/515`
+- Empty predictions: `83`, all corresponding to `tool_call_count >= 12`
+- DeepSeek judge attempts mean: Easy `0.887`, Medium `0.866`, Hard `0.708`
+- Prediction length after final-answer extraction: mean `16` chars, p95 `79`, max `118`
+- Generation output length in `validation_generations/0.jsonl`: median `7121` chars, p95 `18135`, max `25800`
+- Tool call mean: Easy `5.716`, Medium `5.534`, Hard `7.217`
+
+## SFT GBS256 Final-Sentence Run Details
+
+- Model: `save/qwen35_9b_official_tool_h200_sft_full_freeze_gbs256_tok32k_20260530_235204/global_step_84_hf`
+- Data dir: `data/minio3_visualprobe_val_final_sentence515_minio3agent_localpath`
+- Log: `logs/visualprobe_full515_qwen35_9b_sft_full_freeze_gbs256_tok32k_gs84_finalsentence_deepseek_20260531_rerun1.log`
+- Run dir: `save/visualprobe_full515_qwen35_9b_sft_full_freeze_gbs256_tok32k_gs84_finalsentence_deepseek_20260531_rerun1`
+- Generations: `save/visualprobe_full515_qwen35_9b_sft_full_freeze_gbs256_tok32k_gs84_finalsentence_deepseek_20260531_rerun1/validation_generations/0.jsonl`
+- Metrics: `save/visualprobe_full515_qwen35_9b_sft_full_freeze_gbs256_tok32k_gs84_finalsentence_deepseek_20260531_rerun1/train_step_metrics.jsonl`
+- Exit: clean, `exit 0`
+
+Additional stats:
+
+- `Final answer:` present: `411/515`
+- `Picture` labels present: `515/515`
+- Empty predictions: `103`, all corresponding to `tool_call_count >= 12`
+- DeepSeek judge attempts mean: Easy `0.823`, Medium `0.832`, Hard `0.689`
+- Prediction length after final-answer extraction: mean `15` chars, p95 `71`, max `106`
+- Generation output length in `validation_generations/0.jsonl`: median `7922` chars, p95 `19280`, max `24919`
+- Tool call mean: Easy `6.064`, Medium `5.832`, Hard `7.642`
+- Compared with GBS128, GBS256 is lower on all splits and has more empty predictions, so it is not the current best SFT batch-size setting for VP.
 
 ## Answer-Tag Run Details
 

@@ -38,6 +38,7 @@ Frozen launchers:
 exps/train/run_qwen35_official_tool_h200_sft_lora_20260529.sh
 exps/train/run_qwen35_official_tool_h200_sft_full_freeze_20260530.sh
 exps/train/run_qwen35_official_tool_h200_sft_full_freeze_gbs128_20260530.sh
+exps/train/run_qwen35_official_tool_h200_sft_full_freeze_gbs256_20260530.sh
 ```
 
 Use the frozen launcher for any run that should remain comparable with a
@@ -91,6 +92,24 @@ FREEZE_MULTI_MODAL_PROJECTOR=True
 For Qwen3.5 HF models this freezes `model.visual` and its `merger` projector
 before FSDP wrapping, leaving `model.language_model` and `lm_head` trainable.
 
+## Loss vs VisualProbe Val
+
+Rows below include the LoRA SFT baseline plus comparable full-language SFT
+runs. Full-language runs use frozen vision/projector, Qwen3.5 official tool
+formatting, `MAX_TOKEN_LEN_PER_GPU=32768`, 3 epochs, LR `1e-5`, cosine
+schedule, warmup 0.1, and the VisualProbe final-sentence eval prompt.
+
+| SFT run | Global batch | Steps | Final loss | Last-20 loss | VP overall | VP easy | VP medium | VP hard | Empty preds | Takeaway |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `lora_20260529_235552` | 32 | 681 | 0.47966 | 0.48226 | pending | pending | pending | pending | pending | LoRA-only baseline; VP final-sentence eval not run yet. |
+| `full_freeze_20260530_101126` | 32 | 681 | 0.39707 | 0.39916 | 139/515 = 26.99% | 57/141 = 40.43% | 66/268 = 24.63% | 16/106 = 15.09% | 81 | Lowest train loss, not best VP. |
+| `full_freeze_gbs128_tok32k_20260530_143908` | 128 | 168 | 0.43034 | 0.42638 | 144/515 = 27.96% | 60/141 = 42.55% | 67/268 = 25.00% | 17/106 = 16.04% | 83 | Best VP among these SFT runs. |
+| `full_freeze_gbs256_tok32k_20260530_235204` | 256 | 84 | 0.45015 | 0.44092 | 129/515 = 25.05% | 58/141 = 41.13% | 58/268 = 21.64% | 13/106 = 12.26% | 103 | Worse VP and more turn-limit empty predictions. |
+
+Current read: lower train loss does not predict better VisualProbe accuracy.
+GBS128 is the best SFT checkpoint for VP so far, while GBS256 looks too coarse
+for this setup.
+
 ## Runs
 
 ### qwen35_9b_official_tool_h200_sft_20260529_235552
@@ -130,17 +149,40 @@ before FSDP wrapping, leaving `model.language_model` and `lm_head` trainable.
 
 ### qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok32k
 
-- Status: next-run candidate; not launched yet.
+- Status: completed 168/168 steps.
 - Frozen launcher: `exps/train/run_qwen35_official_tool_h200_sft_full_freeze_gbs128_20260530.sh`
 - Purpose: test the paper-style larger effective SFT batch on the local 8x H200 node.
 - Main change from `qwen35_9b_official_tool_h200_sft_full_freeze_20260530_101126`: `TRAIN_BATCH_SIZE=128`.
 - With 7267 rows, 8-way DP, and dataloader drop-last behavior, expected steps are about 56 per epoch and 168 total for 3 epochs.
 - `USE_DYNAMIC_BSZ=True` means `MICRO_BATCH_SIZE_PER_GPU` is not the main per-forward memory knob in this code path. The actual dynamic micro-batch sizing is controlled by `MAX_TOKEN_LEN_PER_GPU`.
 - Candidate token budget is reverted to the successful value `MAX_TOKEN_LEN_PER_GPU=32768`.
-- The attempted `tok48k` run `qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok48k_20260530_131313` failed at step 45 during backward with rank-1 CUDA OOM while trying to allocate 25.50GiB; it completed only through logged step 44 and produced no checkpoint because `SAVE_FREQ=50`.
 - `MICRO_BATCH_SIZE_PER_GPU=2` is recorded for compatibility and for a possible non-dynamic fallback, but under dynamic batching the real effect comes from the token budget above.
 - LR/schedule remains `LR=1e-5`, cosine, warmup 0.1, 3 epochs. Do not scale LR just because the batch is larger unless we intentionally run a separate learning-rate ablation.
 - `SAVE_FREQ=50`, giving checkpoints around steps 50, 100, 150, and final.
+- Run id: `qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok32k_20260530_143908`.
+- Final step loss: 0.43034.
+- Merged HF checkpoint: `save/qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok32k_20260530_143908/global_step_168_hf`.
+
+### qwen35_9b_official_tool_h200_sft_full_freeze_gbs256_tok32k
+
+- Status: completed 84/84 steps.
+- Frozen launcher: `exps/train/run_qwen35_official_tool_h200_sft_full_freeze_gbs256_20260530.sh`
+- Purpose: test a larger local SFT global batch after the GBS128 run.
+- Main change from `qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok32k`: `TRAIN_BATCH_SIZE=256`.
+- With 7267 rows, 8-way DP, and dataloader drop-last behavior, expected steps are about 28 per epoch and 84 total for 3 epochs.
+- Keep `MAX_TOKEN_LEN_PER_GPU=32768`, `USE_DYNAMIC_BSZ=True`, `LR=1e-5`, cosine, warmup 0.1, and 3 epochs.
+- `SAVE_FREQ=25`, giving checkpoints around steps 25, 50, 75, and final.
+- Run id: `qwen35_9b_official_tool_h200_sft_full_freeze_gbs256_tok32k_20260530_235204`.
+- Tmux: `minio3_sft_gbs256_tok32k_20260530_235204` completed and exited.
+- Log: `logs/qwen35_9b_official_tool_h200_sft_full_freeze_gbs256_tok32k_20260530_235204.log`
+- Save dir: `save/qwen35_9b_official_tool_h200_sft_full_freeze_gbs256_tok32k_20260530_235204`
+- Final FSDP checkpoint: `save/qwen35_9b_official_tool_h200_sft_full_freeze_gbs256_tok32k_20260530_235204/global_step_84`
+- Merged HF checkpoint: `save/qwen35_9b_official_tool_h200_sft_full_freeze_gbs256_tok32k_20260530_235204/global_step_84_hf`
+- W&B: https://wandb.ai/dddraxxx/Mini-o3-qwen35-sft/runs/wb9fveol
+- Loss summary: final step loss 0.45015, whole-run mean 0.47331, last-50 mean 0.44371, last-20 mean 0.44092, last-10 mean 0.44174.
+- Final step metrics: grad norm 0.57812, lr 0, global tokens 935577, total tokens 0.079238B.
+- Peak memory: 80.52GB allocated, 137.77GB reserved.
+- VisualProbe full final-sentence eval: 129/515 = 25.05%; see `exps/eval/visualprobe_qwen35_full_eval.md`.
 
 ### qwen35_9b_official_tool_h200_sft_20260529_235314
 
