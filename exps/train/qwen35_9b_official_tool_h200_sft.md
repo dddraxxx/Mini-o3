@@ -101,14 +101,15 @@ schedule, warmup 0.1, and the VisualProbe final-sentence eval prompt.
 
 | SFT run | Global batch | Steps | Final loss | Last-20 loss | VP overall | VP easy | VP medium | VP hard | Empty preds | Takeaway |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `lora_20260529_235552` | 32 | 681 | 0.47966 | 0.48226 | pending | pending | pending | pending | pending | LoRA-only baseline; VP final-sentence eval not run yet. |
+| `lora_20260529_235552` | 32 | 681 | 0.47966 | 0.48226 | 141/515 = 27.38% | 68/141 = 48.23% | 55/268 = 20.52% | 18/106 = 16.98% | 117 | LoRA baseline; strong easy/hard, weak medium, most turn-limit empty predictions. |
 | `full_freeze_20260530_101126` | 32 | 681 | 0.39707 | 0.39916 | 139/515 = 26.99% | 57/141 = 40.43% | 66/268 = 24.63% | 16/106 = 15.09% | 81 | Lowest train loss, not best VP. |
 | `full_freeze_gbs128_tok32k_20260530_143908` | 128 | 168 | 0.43034 | 0.42638 | 144/515 = 27.96% | 60/141 = 42.55% | 67/268 = 25.00% | 17/106 = 16.04% | 83 | Best VP among these SFT runs. |
 | `full_freeze_gbs256_tok32k_20260530_235204` | 256 | 84 | 0.45015 | 0.44092 | 129/515 = 25.05% | 58/141 = 41.13% | 58/268 = 21.64% | 13/106 = 12.26% | 103 | Worse VP and more turn-limit empty predictions. |
 
 Current read: lower train loss does not predict better VisualProbe accuracy.
-GBS128 is the best SFT checkpoint for VP so far, while GBS256 looks too coarse
-for this setup.
+GBS128 is still the best SFT checkpoint by overall VP accuracy. LoRA is close
+overall and has the best easy/hard split scores here, but it is much weaker on
+medium and has the most turn-limit empty predictions.
 
 ## Runs
 

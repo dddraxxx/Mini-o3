@@ -38,9 +38,32 @@ The eval is not bit-stable: model sampling uses temperature 1.0 and the final sc
 | `visualprobe_full515_qwen35_9b_official_tool_plainq_minio3agent_localpath_deepseek_relaxed_20260525_131313` | `qwen35_official_zoom_tool_plain_question` | 191/515 = 37.09% | 74/141 = 52.48% | 89/268 = 33.21% | 28/106 = 26.42% | Clean prompt: image then question, no answer tag instruction |
 | `visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_plainq_deepseek_20260530_1251` | `qwen35_official_zoom_tool_plain_question` | 130/515 = 25.24% | 51/141 = 36.17% | 66/268 = 24.63% | 13/106 = 12.26% | Full-language SFT, frozen vision/projector, global batch 32 |
 | `visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_finalsentence_deepseek_20260530` | `qwen35_official_zoom_tool_final_sentence` | 139/515 = 26.99% | 57/141 = 40.43% | 66/268 = 24.63% | 16/106 = 15.09% | SFT/RL-aligned final-answer prompt with `ADD_VISION_ID=True` |
+| `visualprobe_full515_qwen35_9b_sft_lora_gs681_finalsentence_deepseek_20260531_rerun1` | `qwen35_official_zoom_tool_final_sentence` | 141/515 = 27.38% | 68/141 = 48.23% | 55/268 = 20.52% | 18/106 = 16.98% | LoRA SFT baseline, global batch 32, merged adapter for eval |
 | `visualprobe_full515_qwen35_9b_sft_full_freeze_gbs128_tok32k_gs168_finalsentence_deepseek_ray64_20260530` | `qwen35_official_zoom_tool_final_sentence` | 144/515 = 27.96% | 60/141 = 42.55% | 67/268 = 25.00% | 17/106 = 16.04% | Full-language SFT, frozen vision/projector, global batch 128 |
 | `visualprobe_full515_qwen35_9b_sft_full_freeze_gbs256_tok32k_gs84_finalsentence_deepseek_20260531_rerun1` | `qwen35_official_zoom_tool_final_sentence` | 129/515 = 25.05% | 58/141 = 41.13% | 58/268 = 21.64% | 13/106 = 12.26% | Full-language SFT, frozen vision/projector, global batch 256 |
 | `visualprobe_full515_qwen35_9b_official_tool_deepseek_relaxed_retry_20260525_024413` | `qwen35_official_zoom_tool` | 182/515 = 35.34% | 75/141 = 53.19% | 84/268 = 31.34% | 23/106 = 21.70% | Earlier answer-tag prompt suite |
+
+## Turn-Limit vs Format Check
+
+For the current final-sentence prompt, `void_reason=missing_answer_tag` is a
+legacy reward field and should not be interpreted as a real format failure.
+The useful split is:
+
+- `turn_limit`: `exceed_reason` or `exceed_mask` is set.
+- `nonturn_missing_final`: not turn-limit, but the output lacks `Final answer:`.
+- `empty_prediction`: the extracted `prediction` field is empty.
+
+| Run | Turn-limit | Non-turn missing `Final answer:` | Empty prediction | Empty and turn-limit |
+| --- | ---: | ---: | ---: | ---: |
+| `sft_gbs32_full_freeze` | 81 | 1 | 81 | 81 |
+| `sft_lora_gbs32` | 117 | 6 | 117 | 117 |
+| `sft_gbs128_full_freeze` | 83 | 2 | 83 | 83 |
+| `sft_gbs256_full_freeze` | 103 | 1 | 103 | 103 |
+
+Read: in these SFT runs, every empty prediction is a turn-limit case. The
+non-turn missing-final cases still have non-empty fallback `plain_final`
+predictions, so the dominant failure mode is excessive tool-looping rather than
+answer extraction format.
 
 ## Plain-Question Run Details
 
@@ -101,6 +124,29 @@ Additional stats:
 - Prediction length after final-answer extraction: mean `15` chars, p95 `75`, max `127`
 - Tool call mean: Easy `5.567`, Medium `5.623`, Hard `7.906`
 - Number of turns: min `2`, max `24`, mean `13.841`
+
+## SFT LoRA Final-Sentence Run Details
+
+- Model: `save/qwen35_9b_official_tool_h200_sft_20260529_235552/global_step_681_hf_lora_merged`
+- LoRA export before merge: `save/qwen35_9b_official_tool_h200_sft_20260529_235552/global_step_681_hf_lora_export`
+- Data dir: `data/minio3_visualprobe_val_final_sentence515_minio3agent_localpath`
+- Log: `logs/visualprobe_full515_qwen35_9b_sft_lora_gs681_finalsentence_deepseek_20260531_rerun1.log`
+- Run dir: `save/visualprobe_full515_qwen35_9b_sft_lora_gs681_finalsentence_deepseek_20260531_rerun1`
+- Generations: `save/visualprobe_full515_qwen35_9b_sft_lora_gs681_finalsentence_deepseek_20260531_rerun1/validation_generations/0.jsonl`
+- Metrics: `save/visualprobe_full515_qwen35_9b_sft_lora_gs681_finalsentence_deepseek_20260531_rerun1/train_step_metrics.jsonl`
+- Exit: clean, `exit 0`. The first launch hit a Raylet worker registration EOF before validation; this `rerun1` completed normally.
+
+Additional stats:
+
+- `Final answer:` present: `393/515`
+- Empty predictions: `117`, all corresponding to `tool_call_count >= 12`
+- DeepSeek judged: `398/515`
+- DeepSeek judge attempts mean: Easy `0.865`, Medium `0.787`, Hard `0.613`
+- Prediction length after final-answer extraction: mean `15` chars, p95 `79`, max `109`
+- Generation output length in `validation_generations/0.jsonl`: median `8679` chars, p95 `19048`, max `27437`
+- Tool call mean: Easy `5.787`, Medium `6.269`, Hard `8.387`
+- Number of turns: min `2`, max `24`, mean `14.691`
+- Compared with full-freeze GBS128, LoRA is close overall and stronger on easy/hard, but weaker on medium and has more empty predictions.
 
 ## SFT GBS128 Final-Sentence Run Details
 
