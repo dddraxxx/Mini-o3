@@ -227,6 +227,7 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
             elif not isinstance(agent_data.image_data, list):
                 agent_data.image_data = [agent_data.image_data]
             agent_data.image_data.extend(new_images_this_turn)
+            self._extend_raw_image_data(agent_data, new_images_this_turn)
 
         agent_data.prompt_ids += response_ids
         agent_data.response_mask += [0] * len(response_ids)
@@ -288,6 +289,7 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
             elif not isinstance(agent_data.image_data, list):
                 agent_data.image_data = [agent_data.image_data]
             agent_data.image_data.extend(new_images_this_turn)
+            self._extend_raw_image_data(agent_data, new_images_this_turn)
 
         agent_data.prompt_ids += response_ids
         agent_data.response_mask += [0] * len(response_ids)

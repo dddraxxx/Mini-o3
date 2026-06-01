@@ -220,7 +220,50 @@ def test_minio3_crop_tool_supports_qwen_agent_zoom_parameters():
     )
 
     assert metrics["minio3_crop/source_index"] == 1
+    assert metrics["minio3_crop/source_space"] == "runtime"
     assert response.image[0].size == (50, 40)
+
+
+def test_minio3_crop_tool_uses_raw_image_bank_by_default():
+    tool = MiniO3CropTool(config={"type": "native", "use_relative_coordinates": True, "coordinate_scale": 1000}, tool_schema=None)
+
+    class AgentData:
+        image_data = [Image.new("RGB", (20, 20))]
+        raw_image_data = [Image.new("RGB", (200, 100))]
+
+    response, _, metrics = asyncio.run(
+        tool.execute(
+            "instance",
+            {"bbox_2d": [0, 0, 500, 500], "label": "upper left", "img_idx": 0},
+            agent_data=AgentData(),
+        )
+    )
+
+    assert metrics["minio3_crop/source_space"] == "raw"
+    assert metrics["minio3_crop/source_w"] == 200
+    assert metrics["minio3_crop/source_h"] == 100
+    assert response.image[0].size == (100, 50)
+
+
+def test_tool_agent_loop_extracts_raw_image_bank_from_paths(tmp_path):
+    image_path = tmp_path / "raw.jpg"
+    Image.new("RGB", (31, 17)).save(image_path)
+
+    images = ToolAgentLoop._extract_raw_image_data([], {"image_paths": [str(image_path)]})
+
+    assert images is not None
+    assert len(images) == 1
+    assert images[0].size == (31, 17)
+
+
+def test_tool_agent_loop_appends_observation_to_raw_image_bank():
+    class AgentData:
+        raw_image_data = [Image.new("RGB", (10, 10))]
+
+    ToolAgentLoop._extend_raw_image_data(AgentData, [Image.new("RGB", (5, 7))])
+
+    assert len(AgentData.raw_image_data) == 2
+    assert AgentData.raw_image_data[1].size == (5, 7)
 
 
 def test_reward_counts_legacy_and_official_tool_calls():

@@ -2,6 +2,7 @@ tools:
   - class_name: verl.tools.minio3_crop_tool.MiniO3CropTool
     config:
       type: native
+      use_raw_image_bank: true
       use_relative_coordinates: true
       resize: 1
       min_crop_size: 28

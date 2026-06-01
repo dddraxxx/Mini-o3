@@ -50,12 +50,25 @@ class MiniO3CropTool(BaseTool):
 
     async def execute(self, instance_id: str, parameters: dict[str, Any], **kwargs) -> tuple[ToolResponse, float, dict]:
         agent_data = kwargs.get("agent_data")
-        images = getattr(agent_data, "image_data", None)
-        if not images:
+        model_images = getattr(agent_data, "image_data", None)
+        raw_images = getattr(agent_data, "raw_image_data", None)
+        use_raw_image_bank = bool(self.config.get("use_raw_image_bank", True))
+        raw_count = len(raw_images or [])
+        model_count = len(model_images or [])
+        num_images = max(raw_count if use_raw_image_bank else 0, model_count)
+        if num_images <= 0:
             return ToolResponse(text="ERROR occurs during grounding. No image is available."), 0.0, {}
 
         try:
-            image_index = self._resolve_image_index(parameters, len(images))
+            image_index = self._resolve_image_index(parameters, num_images)
+            if use_raw_image_bank and raw_images and image_index < raw_count:
+                images = raw_images
+                source_space = "raw"
+            else:
+                images = model_images
+                source_space = "runtime"
+            if not images or image_index >= len(images):
+                raise ValueError(f"img_idx {image_index} is out of range for {len(images or [])} image(s).")
             image = images[image_index]
             if not isinstance(image, Image.Image):
                 raise TypeError(f"Expected PIL.Image.Image, got {type(image).__name__}")
@@ -71,10 +84,18 @@ class MiniO3CropTool(BaseTool):
 
         metrics = {
             "minio3_crop/source_index": image_index,
+            "minio3_crop/source_space": source_space,
+            "minio3_crop/raw_bank_enabled": int(use_raw_image_bank),
+            "minio3_crop/raw_bank_count": raw_count,
+            "minio3_crop/runtime_bank_count": model_count,
+            "minio3_crop/source_w": image.width,
+            "minio3_crop/source_h": image.height,
             "minio3_crop/x0": bbox[0],
             "minio3_crop/y0": bbox[1],
             "minio3_crop/x1": bbox[2],
             "minio3_crop/y1": bbox[3],
+            "minio3_crop/crop_w": crop.width,
+            "minio3_crop/crop_h": crop.height,
         }
         return ToolResponse(image=[crop]), 0.0, metrics
 

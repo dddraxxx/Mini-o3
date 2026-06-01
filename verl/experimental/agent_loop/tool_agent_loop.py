@@ -17,6 +17,8 @@ import logging
 import os
 import time
 from enum import Enum
+from io import BytesIO
+from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -77,6 +79,7 @@ class AgentData:
         self.metrics = metrics
         self.request_id = request_id
         self.tools_kwargs = tools_kwargs
+        self.raw_image_data: list[Image.Image] | None = None
 
         # State variables
         self.prompt_ids: list[int] = []
@@ -127,6 +130,7 @@ class ToolAgentLoop(AgentLoopBase):
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         messages = list(kwargs["raw_prompt"])
+        extra_info = kwargs.get("extra_info", {}) or {}
 
         # extract multimodal inputs from messages
         multi_modal_data = await self.process_multi_modal_info(messages)
@@ -134,6 +138,8 @@ class ToolAgentLoop(AgentLoopBase):
         videos = multi_modal_data.get("videos")
         audios = multi_modal_data.get("audios")
         mm_processor_kwargs = self._get_mm_processor_kwargs(audios)
+        use_raw_image_data = self._should_build_raw_image_data(extra_info)
+        raw_images = await self._build_raw_image_data(messages, extra_info) if use_raw_image_data else None
 
         metrics = {}
         request_id = uuid4().hex
@@ -149,9 +155,12 @@ class ToolAgentLoop(AgentLoopBase):
             request_id=request_id,
             tools_kwargs=tools_kwargs,
         )
+        agent_data.raw_image_data = raw_images
+        if use_raw_image_data:
+            agent_data.metrics["minio3_raw_image_bank/enabled"] = 1
+            agent_data.metrics["minio3_raw_image_bank/initial_count"] = len(raw_images or [])
 
         # Per-sample tool selection: filter global tools by extra_info.tool_selection
-        extra_info = kwargs.get("extra_info", {}) or {}
         tool_selection = extra_info.get("tool_selection")
         if tool_selection and self.tools:
             selected = {name: self.tools[name] for name in tool_selection if name in self.tools}
@@ -222,6 +231,93 @@ class ToolAgentLoop(AgentLoopBase):
             }
         )
         return output
+
+    def _should_build_raw_image_data(self, extra_info: dict[str, Any]) -> bool:
+        selected_tools = self.tools
+        tool_selection = extra_info.get("tool_selection") if isinstance(extra_info, dict) else None
+        if tool_selection:
+            selected_tools = {name: self.tools[name] for name in tool_selection if name in self.tools}
+        for tool in selected_tools.values():
+            if tool.__class__.__name__ != "MiniO3CropTool":
+                continue
+            tool_config = getattr(tool, "config", {}) or {}
+            if bool(tool_config.get("use_raw_image_bank", True)):
+                return True
+        return False
+
+    async def _build_raw_image_data(
+        self, messages: list[dict[str, Any]], extra_info: dict[str, Any]
+    ) -> list[Image.Image] | None:
+        return await self.loop.run_in_executor(None, lambda: self._extract_raw_image_data(messages, extra_info))
+
+    @classmethod
+    def _extract_raw_image_data(
+        cls, messages: list[dict[str, Any]], extra_info: dict[str, Any]
+    ) -> list[Image.Image] | None:
+        images: list[Image.Image] = []
+        image_paths = extra_info.get("image_paths") if isinstance(extra_info, dict) else None
+        if isinstance(image_paths, str | os.PathLike):
+            image_paths = [image_paths]
+        if image_paths:
+            for image_path in image_paths:
+                image = cls._load_raw_image_value(image_path)
+                if image is not None:
+                    images.append(image)
+            if images:
+                return images
+
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "image" and "image" not in item and "image_url" not in item:
+                    continue
+                image = cls._load_raw_image_value(item.get("image"))
+                if image is None and "bytes" in item:
+                    image = cls._load_raw_image_value(item.get("bytes"))
+                if image is None and "image_url" in item:
+                    image_url = item.get("image_url")
+                    if isinstance(image_url, dict):
+                        image_url = image_url.get("url")
+                    image = cls._load_raw_image_value(image_url)
+                if image is not None:
+                    images.append(image)
+
+        return images or None
+
+    @staticmethod
+    def _load_raw_image_value(value: Any) -> Image.Image | None:
+        if value is None:
+            return None
+        if isinstance(value, Image.Image):
+            return value.convert("RGB").copy()
+        if isinstance(value, bytes | bytearray):
+            with Image.open(BytesIO(value)) as image:
+                return image.convert("RGB").copy()
+        if isinstance(value, str | os.PathLike):
+            path_value = str(value)
+            if path_value.startswith("file://"):
+                path_value = path_value.removeprefix("file://")
+            if path_value.startswith(("http://", "https://")):
+                return None
+            path = Path(path_value).expanduser()
+            if not path.exists():
+                return None
+            with Image.open(path) as image:
+                return image.convert("RGB").copy()
+        return None
+
+    @staticmethod
+    def _extend_raw_image_data(agent_data: AgentData, images: list[Any]) -> None:
+        raw_images = getattr(agent_data, "raw_image_data", None)
+        if raw_images is None:
+            return
+        for image in images:
+            if isinstance(image, Image.Image):
+                raw_images.append(image)
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
         """Handle the pending state: prepare the prompt and start generation."""
@@ -411,6 +507,7 @@ class ToolAgentLoop(AgentLoopBase):
                 agent_data.image_data = [agent_data.image_data]
             for img in new_images_this_turn:
                 agent_data.image_data.append(img)
+            self._extend_raw_image_data(agent_data, new_images_this_turn)
 
         agent_data.prompt_ids += response_ids
         agent_data.response_mask += [0] * len(response_ids)
