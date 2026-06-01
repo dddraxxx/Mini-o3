@@ -1,0 +1,133 @@
+run,label,step,subset,accuracy
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",10,easy,0.53125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",10,hard,0.25
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",10,medium,0.46875
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",20,easy,0.59375
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",20,hard,0.25
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",20,medium,0.3125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",30,easy,0.59375
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",30,hard,0.28125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",30,medium,0.34375
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",40,easy,0.5625
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",40,hard,0.28125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",40,medium,0.3125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",50,easy,0.53125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",50,hard,0.1875
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",50,medium,0.34375
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",60,easy,0.4375
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",60,hard,0.21875
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",60,medium,0.40625
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",70,easy,0.65625
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",70,hard,0.28125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",70,medium,0.28125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",80,easy,0.5
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",80,hard,0.21875
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",80,medium,0.3125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",90,easy,0.375
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",90,hard,0.09375
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",90,medium,0.28125
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",100,easy,0.34375
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",100,hard,0.0625
+base_final_sentence_0529,"base init, final-sentence prompt, no-exceed mask off",100,medium,0.25
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",10,easy,0.40625
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",10,hard,0.125
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",10,medium,0.25
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",20,easy,0.375
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",20,hard,0.1875
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",20,medium,0.28125
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",30,easy,0.3125
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",30,hard,0.25
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",30,medium,0.21875
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",40,easy,0.5625
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",40,hard,0.09375
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",40,medium,0.25
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",50,easy,0.375
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",50,hard,0.25
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",50,medium,0.34375
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",60,easy,0.4375
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",60,hard,0.21875
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",60,medium,0.25
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",70,easy,0.34375
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",70,hard,0.21875
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",70,medium,0.1875
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",80,easy,0.375
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",80,hard,0.21875
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",80,medium,0.28125
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",90,easy,0.34375
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",90,hard,0.21875
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",90,medium,0.1875
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",100,easy,0.21875
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",100,hard,0.125
+base_t12_ignore_exceed_0527,"base init, T12 ignore-exceed",100,medium,0.1875
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",10,easy,0.5
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",10,hard,0.15625
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",10,medium,0.375
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",20,easy,0.34375
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",20,hard,0.1875
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",20,medium,0.3125
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",30,easy,0.34375
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",30,hard,0.1875
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",30,medium,0.3125
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",40,easy,0.4375
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",40,hard,0.1875
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",40,medium,0.28125
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",50,easy,0.4375
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",50,hard,0.125
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",50,medium,0.15625
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",60,easy,0.46875
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",60,hard,0.09375
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",60,medium,0.25
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",70,easy,0.53125
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",70,hard,0.09375
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",70,medium,0.21875
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",80,easy,0.40625
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",80,hard,0.21875
+base_t12_no_exceed_old_extract_0528,"base init, T12 no-exceed, old extraction",80,medium,0.25
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",10,easy,0.53125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",10,hard,0.1875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",10,medium,0.28125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",20,easy,0.375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",20,hard,0.15625
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",20,medium,0.25
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",30,easy,0.40625
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",30,hard,0.1875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",30,medium,0.21875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",40,easy,0.4375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",40,hard,0.125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",40,medium,0.40625
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",50,easy,0.46875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",50,hard,0.1875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",50,medium,0.25
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",60,easy,0.46875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",60,hard,0.125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",60,medium,0.15625
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",70,easy,0.34375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",70,hard,0.09375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",70,medium,0.21875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",80,easy,0.4375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",80,hard,0.125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",80,medium,0.3125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",90,easy,0.34375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",90,hard,0.09375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",90,medium,0.15625
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",100,easy,0.34375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",100,hard,0.125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",100,medium,0.09375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",110,easy,0.21875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",110,hard,0.03125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",110,medium,0.125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",120,easy,0.25
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",120,hard,0.03125
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",120,medium,0.15625
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",130,easy,0.21875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",130,hard,0.0625
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",130,medium,0.09375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",140,easy,0.15625
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",140,hard,0.09375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",140,medium,0.09375
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",150,easy,0.1875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",150,hard,0.1875
+base_t6_ignore_exceed_0526,"base init, T6 ignore-exceed",150,medium,0.09375
+current_sft_final_only,"current SFT init, final-only reward",10,easy,0.5625
+current_sft_final_only,"current SFT init, final-only reward",10,hard,0.15625
+current_sft_final_only,"current SFT init, final-only reward",10,medium,0.3125
