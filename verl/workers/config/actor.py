@@ -124,8 +124,10 @@ class ActorConfig(BaseConfig):
         entropy_coeff (float): Entropy coefficient for regularization.
         tau_pos (float): Positive tau for SAPO smoothing (>= 1.0 keeps rewards stable).
         tau_neg (float): Negative tau for SAPO smoothing (> tau_pos for asymmetry).
-        ignore_exceed (bool): Whether to zero actor loss masks for Mini-o3 trajectories that exceed turn/length caps.
-        ignore_void (bool): Whether to zero actor loss masks for Mini-o3 terminal trajectories without valid answers.
+        ignore_clip (bool): Whether to zero actor loss masks for Mini-o3 trajectories that fill response length.
+        ignore_exceed (bool): Whether to zero actor loss masks for Mini-o3 trajectories that exceed turn/tool budgets.
+        ignore_format (bool): Whether to zero actor loss masks for Mini-o3 terminal trajectories without final answers.
+        ignore_invalid (bool): Whether to zero actor loss masks for any Mini-o3 invalid trajectory.
         use_kl_loss (bool): Whether to use KL divergence loss.
         use_torch_compile (bool): Whether to use torch.compile for optimization.
         kl_loss_coef (float): KL divergence loss coefficient.
@@ -169,8 +171,10 @@ class ActorConfig(BaseConfig):
     tau_neg: float = 1.05
     calculate_entropy: bool = False
     calculate_sum_pi_squared: bool = False
+    ignore_clip: bool = False
     ignore_exceed: bool = False
-    ignore_void: bool = False
+    ignore_format: bool = False
+    ignore_invalid: bool = False
     use_kl_loss: bool = False
     # Whether to enable PrefixGrouper-based shared-prefix forward
     use_prefix_grouper: bool = False

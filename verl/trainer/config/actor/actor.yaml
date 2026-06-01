@@ -95,11 +95,17 @@ calculate_entropy: false
 # c.f. https://yingru.notion.site/The-Optimal-Token-Baseline-399211a558b782cfa936014c0d42dfb8
 calculate_sum_pi_squared: false
 
-# Mini-o3 compatibility: drop actor loss for trajectories that hit tool/turn/length caps.
+# Mini-o3 compatibility: optionally drop actor loss for trajectories that fill response length.
+ignore_clip: false
+
+# Mini-o3 compatibility: optionally drop actor loss for trajectories that hit tool/turn caps.
 ignore_exceed: false
 
 # Mini-o3 compatibility: optionally drop actor loss for terminal trajectories without a valid final answer.
-ignore_void: false
+ignore_format: false
+
+# Mini-o3 compatibility: optionally drop actor loss for the union of clip/exceed/format failures.
+ignore_invalid: false
 
 # Whether to use KL loss instead of KL reward penalty. True for GRPO
 use_kl_loss: false

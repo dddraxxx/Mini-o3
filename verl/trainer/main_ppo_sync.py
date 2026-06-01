@@ -1032,8 +1032,12 @@ class PPOTrainer:
             "tool_rewards",
             "exceed_mask",
             "exceed_reason",
-            "void_mask",
-            "void_reason",
+            "clip_mask",
+            "clip_reason",
+            "format_mask",
+            "format_reason",
+            "invalid_mask",
+            "invalid_reasons",
         )
         rows = extra_fields_list.tolist() if hasattr(extra_fields_list, "tolist") else extra_fields_list
         if rows is None:

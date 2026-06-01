@@ -335,7 +335,7 @@ This uses official verl tool semantics directly:
 - tool response is encoded as `role=tool`
 - Qwen3.5 template renders `<tool_response>`
 
-Tradeoff: Mini-o3-specific `void_mask` / `exceed_mask` behavior from
+Tradeoff: Mini-o3-specific `format_mask` / `clip_mask` / `exceed_mask` behavior from
 `MiniO3ToolAgentLoop` is not preserved.
 
 Option B, preferred path:
@@ -347,7 +347,7 @@ Keep `mini_o3_tool_agent`, but add an official-tool mode:
 - do not set the legacy stop sequence `</grounding>`;
 - encode zoom responses as official `role=tool` messages or explicitly mirror
 the Qwen3.5 `<tool_response>` template;
-- preserve Mini-o3 `void_mask`, `exceed_mask`, stage logging, and response mask
+- preserve Mini-o3 `format_mask`, `clip_mask`, `exceed_mask`, stage logging, and response mask
 behavior.
 
 Do not keep the current `MiniO3ToolAgentLoop._handle_pending_state()` behavior

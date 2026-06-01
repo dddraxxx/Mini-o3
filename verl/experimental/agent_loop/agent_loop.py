@@ -1130,6 +1130,12 @@ class AgentLoopWorker:
         default_extra_keys = {
             "exceed_mask",
             "exceed_reason",
+            "clip_mask",
+            "clip_reason",
+            "format_mask",
+            "format_reason",
+            "invalid_mask",
+            "invalid_reasons",
             "turn_scores",
             "tool_calls",
             "tool_responses",
@@ -1138,8 +1144,6 @@ class AgentLoopWorker:
             "min_global_steps",
             "max_global_steps",
             "extras",
-            "void_mask",
-            "void_reason",
         }
         all_keys = set(key for input_item in inputs for key in input_item.extra_fields) | default_extra_keys
         for key in all_keys:

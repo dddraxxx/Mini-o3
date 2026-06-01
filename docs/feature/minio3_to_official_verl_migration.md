@@ -319,22 +319,22 @@ PROMPT_ADMISSION_STATE_PATH=$RUN_DIR/prompt_admission_state.jsonl
 - rollout 里产出 multi_turn_response_mask
 - actor 里有 use_multi_turn_response_mask=True
 - dp_actor.py 会用 multi_turn_response_mask 替代普通 response mask
-- 还会对 exceed_mask / void_mask 把 loss mask 清零
+- 还会对 exceed/format/clip/invalid 这类整条 trajectory mask 做可选 loss mask 清零
 - 旧脚本默认开：actor_rollout_ref.actor.use_multi_turn_response_mask=True
 
 当前 official verl 迁移版有 response_mask，而且工具 observation token 会标成 0，这部分是对的；因此不用把旧
-`multi_turn_response_mask` 原样搬进 actor。需要补齐的是 exceed/void 这类整条 trajectory 的 loss-mask 清零。
+`multi_turn_response_mask` 原样搬进 actor。需要补齐的是 exceed/format/clip/invalid 这类整条 trajectory 的 loss-mask 清零。
 
 迁移方式：
 
 - `mini_o3_tool_agent` 在模型还想继续 crop 但已经撞到 `response_length`、assistant/user turn 上限、或 observation
   会超过 response budget 时，写出 `extra_fields.exceed_mask=True`。
-- 如果终止时是 length stop 或缺少最终 `<answer>...</answer>`，写出 `extra_fields.void_mask=True`；这个默认只记录，
-  不参与 loss 清零。
+- 如果 response window 被填满，写出/统计 `clip_mask`。
+- 如果终止时缺少合法 `Final answer:`，写出 `extra_fields.format_mask=True`。
+- `invalid_mask` 是 `clip | exceed | format`，默认只记录，不参与 loss 清零。
 - `ray_trainer.apply_minio3_loss_masks()` 在 reward 之后、old_log_prob/advantage/actor update 之前，把这些 row mask
   应用到 `batch.batch["response_mask"]`。
-- actor config 支持 `ignore_exceed` / `ignore_void`。正式 Mini-o3 脚本默认 `ignore_exceed=True`、`ignore_void=False`，
-  对齐旧 `run_minio3_rl_lora_pyvision_style*.sh`。
+- actor config 支持 `ignore_clip` / `ignore_exceed` / `ignore_format` / `ignore_invalid`。
 
 结论：
 

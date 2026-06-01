@@ -284,7 +284,7 @@ def test_reward_counts_legacy_and_official_tool_calls():
     assert official["format_score"] == 1.0
 
 
-def test_minio3_void_check_accepts_final_answer_marker():
+def test_minio3_format_check_accepts_final_answer_marker():
     assert _has_terminal_final_answer("</think>\n\nFinal answer: The clouds are small.")
     assert not _has_terminal_final_answer("<think>x</think><answer>The clouds are small.</answer>")
     assert not _has_terminal_final_answer("</think>\n\nThe clouds are small.")

@@ -45,13 +45,15 @@ MAX_PROMPT_LENGTH=8192
 MAX_RESPONSE_LENGTH=16384
 MAX_ASSISTANT_TURNS=6
 MAX_USER_TURNS=6
-MINIO3_IGNORE_EXCEED=True
-MINIO3_IGNORE_VOID=False
+MINIO3_IGNORE_CLIP=False
+MINIO3_IGNORE_EXCEED=False
+MINIO3_IGNORE_FORMAT=False
+MINIO3_IGNORE_INVALID=False
 PROMPT_ADMISSION_ENABLE=True
 PROMPT_ADMISSION_REWARD_STD_EPSILON=1.0e-4
 ```
 
-`MINIO3_IGNORE_EXCEED=True` 表示撞到 response length 或 turn limit 的 trajectory 整条 `response_mask` 置 0，不参与 actor loss；`MINIO3_IGNORE_VOID=False` 表示缺少最终答案或 length stop 的 void trajectory 默认只记录指标，不直接清 loss。
+Mini-o3 失败 logging 使用 `clip/exceed/format/invalid`：`clip` 表示 response 长度打满，`exceed` 表示 tool/multi-turn 还想继续但撞到硬预算，`format` 表示终止时缺少合法 `Final answer:`，`invalid` 是三者 union。`MINIO3_IGNORE_*` 开关控制是否把对应 row 的整条 `response_mask` 置 0；正式 Qwen3.5 run 默认只记录这些指标，不清 loss。
 
 `PROMPT_ADMISSION_ENABLE=True` 表示训练前先按 prompt group 做 admission：同一 prompt 的 `ROLLOUT_N` 条 response reward 必须有组内方差，否则不进入 GRPO update。
 
@@ -90,7 +92,7 @@ PPO_MAX_TOKEN_LEN_PER_GPU=32768
 | reward backend | rule reward | DeepSeek self-judge by default |
 | `SELF_JUDGE_MODEL` | unset | `deepseek-v4-flash` |
 | `LLM_JUDGE_MAX_RETRIES` | unset | `5` |
-| Mini-o3 loss mask | `MINIO3_IGNORE_EXCEED=True`, `MINIO3_IGNORE_VOID=False` | same |
+| Mini-o3 loss mask | `MINIO3_IGNORE_CLIP=False`, `MINIO3_IGNORE_EXCEED=False`, `MINIO3_IGNORE_FORMAT=False`, `MINIO3_IGNORE_INVALID=False` | same |
 | prompt admission | enabled, std epsilon `1.0e-4`, state JSONL under `RUN_DIR` | same |
 | `SAVE_FREQ` | `10` | `10` |
 | `TEST_FREQ` | `5` | `10` |

@@ -179,6 +179,23 @@ def _get_row_mask(data: DataProto, key: str, *, batch_size: int, device: torch.d
     return None
 
 
+def _has_row_key(data: DataProto, key: str) -> bool:
+    return (data.batch is not None and key in data.batch.keys()) or (
+        data.non_tensor_batch is not None and key in data.non_tensor_batch
+    )
+
+
+def _get_response_clip_mask(data: DataProto, *, batch_size: int, device: torch.device) -> torch.Tensor:
+    """Return rows whose response attention exactly fills the configured response window."""
+    if data.batch is None or "responses" not in data.batch.keys() or "attention_mask" not in data.batch.keys():
+        return torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+    max_response_length = data.batch["responses"].shape[-1]
+    response_attention = data.batch["attention_mask"][:, -max_response_length:]
+    response_lengths = response_attention.sum(dim=-1)
+    return torch.eq(response_lengths, max_response_length).to(device=device, dtype=torch.bool)
+
+
 def apply_minio3_loss_masks(data: DataProto, actor_config) -> dict[str, float]:
     """Zero response_mask rows for Mini-o3 trajectories that should not train the actor."""
     if "response_mask" not in data.batch.keys():
@@ -189,28 +206,52 @@ def apply_minio3_loss_masks(data: DataProto, actor_config) -> dict[str, float]:
     device = response_mask.device
     metrics: dict[str, float] = {}
     masks_to_zero = torch.zeros(batch_size, dtype=torch.bool, device=device)
-    saw_minio3_mask = False
+    has_minio3_fields = any(
+        _has_row_key(data, key)
+        for key in ("clip_mask", "exceed_mask", "format_mask", "invalid_mask")
+    )
+    if not has_minio3_fields:
+        return metrics
 
-    for mask_key, config_key, metric_name in (
-        ("exceed_mask", "ignore_exceed", "exceed"),
-        ("void_mask", "ignore_void", "void"),
-    ):
-        row_mask = _get_row_mask(data, mask_key, batch_size=batch_size, device=device)
-        if row_mask is None:
-            continue
+    clip_mask = _get_row_mask(data, "clip_mask", batch_size=batch_size, device=device)
+    derived_clip_mask = _get_response_clip_mask(data, batch_size=batch_size, device=device)
+    clip_mask = derived_clip_mask if clip_mask is None else (clip_mask | derived_clip_mask)
 
-        saw_minio3_mask = True
-        mask_ratio = row_mask.float().mean().item()
-        metrics[f"batch/{metric_name}_sample_ratio"] = mask_ratio
-        if actor_config.get(config_key, False):
-            masks_to_zero |= row_mask
-            metrics[f"batch/ignore_{metric_name}_sample_ratio"] = mask_ratio
+    exceed_mask = _get_row_mask(data, "exceed_mask", batch_size=batch_size, device=device)
+    if exceed_mask is None:
+        exceed_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+    format_mask = _get_row_mask(data, "format_mask", batch_size=batch_size, device=device)
+    if format_mask is None:
+        format_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+    invalid_mask = clip_mask | exceed_mask | format_mask
+    metrics.update(
+        {
+            "batch/clip_sample_ratio": clip_mask.float().mean().item(),
+            "batch/exceed_sample_ratio": exceed_mask.float().mean().item(),
+            "batch/format_sample_ratio": format_mask.float().mean().item(),
+            "batch/invalid_sample_ratio": invalid_mask.float().mean().item(),
+        }
+    )
+
+    if actor_config.get("ignore_invalid", False):
+        masks_to_zero |= invalid_mask
+        metrics["batch/ignore_invalid_sample_ratio"] = invalid_mask.float().mean().item()
+    else:
+        for row_mask, config_key, metric_name in (
+            (clip_mask, "ignore_clip", "clip"),
+            (exceed_mask, "ignore_exceed", "exceed"),
+            (format_mask, "ignore_format", "format"),
+        ):
+            if actor_config.get(config_key, False):
+                masks_to_zero |= row_mask
+                metrics[f"batch/ignore_{metric_name}_sample_ratio"] = row_mask.float().mean().item()
 
     if masks_to_zero.any():
         response_mask[masks_to_zero] = 0
 
-    if saw_minio3_mask:
-        metrics["batch/minio3_loss_mask_zeroed_ratio"] = masks_to_zero.float().mean().item()
+    metrics["batch/minio3_loss_mask_zeroed_ratio"] = masks_to_zero.float().mean().item()
 
     return metrics
 
@@ -618,8 +659,12 @@ class RayPPOTrainer:
             "tool_rewards",
             "exceed_mask",
             "exceed_reason",
-            "void_mask",
-            "void_reason",
+            "clip_mask",
+            "clip_reason",
+            "format_mask",
+            "format_reason",
+            "invalid_mask",
+            "invalid_reasons",
         )
         rows = rows.tolist() if hasattr(rows, "tolist") else rows
         if rows is None:

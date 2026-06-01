@@ -61,7 +61,7 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
             turn_sampling_params.setdefault("include_stop_str_in_output", True)
 
         if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
-            self._mark_exceed(agent_data, "response_length_before_generation")
+            self._mark_clip(agent_data, "response_length_before_generation")
             return AgentState.TERMINATED
 
         turn_sampling_params = dict(turn_sampling_params)
@@ -121,30 +121,31 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
         _, agent_data.tool_calls = await self.tool_parser.extract_tool_calls(agent_data.response_ids, tools)
 
         if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
+            self._mark_clip(agent_data, "response_length")
             if agent_data.tool_calls:
                 self._mark_exceed(agent_data, "response_length_with_tool_call")
             else:
-                self._mark_void_if_invalid_final(agent_data, output.stop_reason)
+                self._mark_format_if_missing_final(agent_data)
             return AgentState.TERMINATED
 
         if self.max_assistant_turns and agent_data.assistant_turns >= self.max_assistant_turns:
             if agent_data.tool_calls:
                 self._mark_exceed(agent_data, "assistant_turn_limit_with_tool_call")
             else:
-                self._mark_void_if_invalid_final(agent_data, output.stop_reason)
+                self._mark_format_if_missing_final(agent_data)
             return AgentState.TERMINATED
 
         if self.max_user_turns and agent_data.user_turns >= self.max_user_turns:
             if agent_data.tool_calls:
                 self._mark_exceed(agent_data, "user_turn_limit_with_tool_call")
             else:
-                self._mark_void_if_invalid_final(agent_data, output.stop_reason)
+                self._mark_format_if_missing_final(agent_data)
             return AgentState.TERMINATED
 
         if agent_data.tool_calls:
             return AgentState.PROCESSING_TOOLS
 
-        self._mark_void_if_invalid_final(agent_data, output.stop_reason)
+        self._mark_format_if_missing_final(agent_data)
         return AgentState.TERMINATED
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
@@ -317,14 +318,31 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
     def _mark_exceed(self, agent_data: AgentData, reason: str) -> None:
         agent_data.extra_fields["exceed_mask"] = True
         agent_data.extra_fields.setdefault("exceed_reason", reason)
+        self._mark_invalid(agent_data, f"exceed:{reason}")
         _stage_log(f"minio3.exceed request={agent_data.request_id[:8]} reason={reason}")
 
-    def _mark_void_if_invalid_final(self, agent_data: AgentData, stop_reason: Any) -> None:
+    def _mark_clip(self, agent_data: AgentData, reason: str) -> None:
+        agent_data.extra_fields["clip_mask"] = True
+        agent_data.extra_fields.setdefault("clip_reason", reason)
+        self._mark_invalid(agent_data, f"clip:{reason}")
+        _stage_log(f"minio3.clip request={agent_data.request_id[:8]} reason={reason}")
+
+    def _mark_format_if_missing_final(self, agent_data: AgentData) -> None:
         decoded = self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
-        stopped_by_length = "length" in str(stop_reason or "").lower()
-        has_final_answer = _has_terminal_final_answer(decoded)
-        if stopped_by_length or not has_final_answer:
-            reason = "length" if stopped_by_length else "missing_final_answer"
-            agent_data.extra_fields["void_mask"] = True
-            agent_data.extra_fields.setdefault("void_reason", reason)
-            _stage_log(f"minio3.void request={agent_data.request_id[:8]} reason={reason}")
+        if not _has_terminal_final_answer(decoded):
+            reason = "missing_final_answer"
+            agent_data.extra_fields["format_mask"] = True
+            agent_data.extra_fields.setdefault("format_reason", reason)
+            self._mark_invalid(agent_data, f"format:{reason}")
+            _stage_log(f"minio3.format request={agent_data.request_id[:8]} reason={reason}")
+
+    def _mark_invalid(self, agent_data: AgentData, reason: str) -> None:
+        agent_data.extra_fields["invalid_mask"] = True
+        reasons = agent_data.extra_fields.get("invalid_reasons")
+        if reasons is None:
+            reasons = []
+        elif not isinstance(reasons, list):
+            reasons = [reasons]
+        if reason not in reasons:
+            reasons.append(reason)
+        agent_data.extra_fields["invalid_reasons"] = reasons
