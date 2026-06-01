@@ -17,6 +17,9 @@ This records the full VisualProbe validation runs used as the current Qwen3.5-9B
   `/mnt/localssd/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a`
 - Agent loop: `mini_o3_tool_agent`
 - Tool: `image_zoom_in_tool`
+- Raw-crop fixed runs use the raw image bank for tool crops:
+  `use_raw_image_bank: true`; successful tool responses report
+  `minio3_crop/source_space=raw`.
 - Multi-turn format: `qwen3_coder`
 - Vision IDs: `ADD_VISION_ID=True`, so the initial image and tool observation images are labeled as `Picture N`.
 - Reward: `exps/eval/snapshots/20260525_qwen35_vp/minio3_reward.py`
@@ -35,6 +38,8 @@ The eval is not bit-stable: model sampling uses temperature 1.0 and the final sc
 
 | Run | Prompt suite | Overall | Easy | Medium | Hard | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
+| `visualprobe_full515_qwen35_9b_base_rawcrop_finalsentence_nootel_20260531_204126` | `qwen35_official_zoom_tool_final_sentence` | 225/515 = 43.69% | 84/141 = 59.57% | 109/268 = 40.67% | 32/106 = 30.19% | Base Qwen3.5-9B, raw image bank crop, final-sentence prompt, no-OTel launch |
+| `visualprobe_full515_qwen35_9b_sft_gbs128_rawcrop_finalsentence_nootel_20260531_194446` | `qwen35_official_zoom_tool_final_sentence` | 182/515 = 35.34% | 67/141 = 47.52% | 89/268 = 33.21% | 26/106 = 24.53% | Full-language SFT GBS128 checkpoint, raw image bank crop; +38/515 over older runtime-crop SFT, but -43/515 vs raw-crop base |
 | `visualprobe_full515_qwen35_9b_official_tool_plainq_minio3agent_localpath_deepseek_relaxed_20260525_131313` | `qwen35_official_zoom_tool_plain_question` | 191/515 = 37.09% | 74/141 = 52.48% | 89/268 = 33.21% | 28/106 = 26.42% | Clean prompt: image then question, no answer tag instruction |
 | `visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_plainq_deepseek_20260530_1251` | `qwen35_official_zoom_tool_plain_question` | 130/515 = 25.24% | 51/141 = 36.17% | 66/268 = 24.63% | 13/106 = 12.26% | Full-language SFT, frozen vision/projector, global batch 32 |
 | `visualprobe_full515_qwen35_9b_sft_full_freeze_gs681_finalsentence_deepseek_20260530` | `qwen35_official_zoom_tool_final_sentence` | 139/515 = 26.99% | 57/141 = 40.43% | 66/268 = 24.63% | 16/106 = 15.09% | SFT/RL-aligned final-answer prompt with `ADD_VISION_ID=True` |
@@ -55,6 +60,8 @@ The useful split is:
 
 | Run | Turn-limit | Non-turn missing `Final answer:` | Empty prediction | Empty and turn-limit |
 | --- | ---: | ---: | ---: | ---: |
+| `base_rawcrop_finalsentence` | 15 | 24 | 14 | 14 |
+| `sft_gbs128_rawcrop_finalsentence` | 86 | 0 | 86 | 86 |
 | `sft_gbs32_full_freeze` | 81 | 1 | 81 | 81 |
 | `sft_lora_gbs32` | 117 | 6 | 117 | 117 |
 | `sft_gbs128_full_freeze` | 83 | 2 | 83 | 83 |
@@ -62,8 +69,72 @@ The useful split is:
 
 Read: in these SFT runs, every empty prediction is a turn-limit case. The
 non-turn missing-final cases still have non-empty fallback `plain_final`
-predictions, so the dominant failure mode is excessive tool-looping rather than
-answer extraction format.
+predictions, so the dominant SFT failure mode is excessive tool-looping rather
+than answer extraction format. The raw-crop base run has more non-turn missing
+`Final answer:` cases, but those are not the dominant source of empty
+predictions.
+
+## Raw-Crop Re-Eval Notes
+
+The 2026-05-31 raw-crop re-eval fixes the crop source: tool crops are taken
+from the original image bank instead of the runtime-resized image bank, while
+the prompt and final-answer extraction remain the SFT/RL-aligned
+`final_sentence` setting.
+
+| Pair | Delta |
+| --- | ---: |
+| Raw-crop base vs raw-crop SFT GBS128 | +43/515 = +8.35 pp for base |
+| Raw-crop SFT GBS128 vs older runtime-crop SFT GBS128 | +38/515 = +7.38 pp for raw-crop |
+
+Raw-crop improves the GBS128 SFT result from 144/515 to 182/515, but the same
+setting also lifts the base model to 225/515. The SFT checkpoint still
+over-tools relative to base: mean turns are 13.033 vs 7.783, empty predictions
+are 86 vs 14, and mean tool calls roughly double on all splits.
+
+Image-index behavior also differs sharply. In raw-crop base, tool calls use
+`img_idx > 0` only 11/1493 times across 9/515 rows. In raw-crop SFT GBS128,
+tool calls use `img_idx > 0` 1436/2845 times across 427/515 rows, which confirms
+that SFT learned to reference later observation images, even though VP accuracy
+does not improve over base.
+
+## Base Raw-Crop Final-Sentence Run Details
+
+- Model:
+  `/mnt/localssd/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a`
+- Data dir: `data/minio3_visualprobe_val_final_sentence515_minio3agent_base_rawcrop_nootel`
+- Log: `logs/visualprobe_full515_qwen35_9b_base_rawcrop_finalsentence_nootel_20260531_204126.log`
+- Run dir: `save/visualprobe_full515_qwen35_9b_base_rawcrop_finalsentence_nootel_20260531_204126`
+- Generations: `save/visualprobe_full515_qwen35_9b_base_rawcrop_finalsentence_nootel_20260531_204126/validation_generations/0.jsonl`
+- Metrics: `save/visualprobe_full515_qwen35_9b_base_rawcrop_finalsentence_nootel_20260531_204126/train_step_metrics.jsonl`
+- Exit: clean, `exit 0`
+
+Additional stats:
+
+- Successful crop source: `minio3_crop/source_space=raw` for 1490 tool responses
+- Empty predictions: `14`
+- Exceed reason: `assistant_turn_limit_with_tool_call=11`, `official_tool_response_would_exceed_response_length=4`
+- DeepSeek judge attempts mean: Easy `0.972`, Medium `0.985`, Hard `0.943`
+- Tool call mean: Easy `2.752`, Medium `2.757`, Hard `3.566`
+- Number of turns: min `2`, max `24`, mean `7.783`
+
+## SFT GBS128 Raw-Crop Final-Sentence Run Details
+
+- Model: `save/qwen35_9b_official_tool_h200_sft_full_freeze_gbs128_tok32k_20260530_143908/global_step_168_hf`
+- Data dir: `data/minio3_visualprobe_val_final_sentence515_minio3agent_rawcrop_full_nootel`
+- Log: `logs/visualprobe_full515_qwen35_9b_sft_gbs128_rawcrop_finalsentence_nootel_20260531_194446.log`
+- Run dir: `save/visualprobe_full515_qwen35_9b_sft_gbs128_rawcrop_finalsentence_nootel_20260531_194446`
+- Generations: `save/visualprobe_full515_qwen35_9b_sft_gbs128_rawcrop_finalsentence_nootel_20260531_194446/validation_generations/0.jsonl`
+- Metrics: `save/visualprobe_full515_qwen35_9b_sft_gbs128_rawcrop_finalsentence_nootel_20260531_194446/train_step_metrics.jsonl`
+- Exit: clean, `exit 0`
+
+Additional stats:
+
+- Successful crop source: `minio3_crop/source_space=raw` for 2842 tool responses
+- Empty predictions: `86`, all corresponding to turn-limit or response-length exceed
+- Exceed reason: `assistant_turn_limit_with_tool_call=82`, `official_tool_response_would_exceed_response_length=4`
+- DeepSeek judge attempts mean: Easy `0.851`, Medium `0.858`, Hard `0.745`
+- Tool call mean: Easy `5.546`, Medium `5.201`, Hard `7.085`
+- Number of turns: min `2`, max `24`, mean `13.033`
 
 ## Plain-Question Run Details
 
