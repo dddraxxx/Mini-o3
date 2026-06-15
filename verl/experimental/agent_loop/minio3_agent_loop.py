@@ -37,6 +37,12 @@ def _has_terminal_final_answer(decoded: str) -> bool:
     return FINAL_ANSWER_MARKER_RE.search(decoded) is not None
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 @register("mini_o3_tool_agent")
 class MiniO3ToolAgentLoop(ToolAgentLoop):
     """Mini-o3 legacy grounding loop on top of official verl ToolAgentLoop.
@@ -46,11 +52,77 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
     user observation so the next turn matches Mini-o3's training semantics.
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.show_budget = _as_bool(getattr(self.rollout_config.multi_turn, "show_budget", False))
+
     def _legacy_grounding_mode(self) -> bool:
         return self.tool_parser_name == "minio3_grounding"
 
     def _active_tool_schemas(self, agent_data: AgentData) -> list[dict[str, Any]]:
         return getattr(agent_data, "_active_tool_schemas", self.tool_schemas)
+
+    def _initial_budget_text(self) -> str | None:
+        if not self.show_budget or not self.max_assistant_turns:
+            return None
+        tool_rounds = max(int(self.max_assistant_turns) - 1, 0)
+        return f"Budget: up to {tool_rounds} tool rounds."
+
+    def _remaining_budget_text(self, agent_data: AgentData) -> str | None:
+        if not self.show_budget:
+            return None
+
+        parts: list[str] = []
+        if self.max_assistant_turns:
+            tool_rounds_left = max(int(self.max_assistant_turns) - int(agent_data.assistant_turns) - 1, 0)
+            parts.append(f"{tool_rounds_left} tool rounds left")
+
+        remaining_tokens = max(int(self.response_length) - len(agent_data.response_mask), 0)
+        parts.append(f"{self._format_token_budget(remaining_tokens)} tokens left")
+        return f"Budget: {', '.join(parts)}."
+
+    @staticmethod
+    def _format_token_budget(tokens: int) -> str:
+        if tokens >= 1000:
+            return f"~{max(round(tokens / 1000), 1)}k"
+        return str(max(tokens, 0))
+
+    @classmethod
+    def _append_text_to_message(cls, message: dict[str, Any], text: str) -> dict[str, Any]:
+        updated = dict(message)
+        content = updated.get("content")
+        if isinstance(content, list):
+            copied_content = [dict(item) if isinstance(item, dict) else item for item in content]
+            if copied_content and isinstance(copied_content[-1], dict) and copied_content[-1].get("type") == "text":
+                last = dict(copied_content[-1])
+                last_text = str(last.get("text") or "").rstrip()
+                last["text"] = f"{last_text}\n\n{text}" if last_text else text
+                copied_content[-1] = last
+            else:
+                copied_content.append({"type": "text", "text": text})
+            updated["content"] = copied_content
+        else:
+            existing = str(content or "").rstrip()
+            updated["content"] = f"{existing}\n\n{text}" if existing else text
+        return updated
+
+    def _messages_with_initial_budget(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        budget_text = self._initial_budget_text()
+        if not budget_text:
+            return messages
+        updated = list(messages)
+        for idx in range(len(updated) - 1, -1, -1):
+            if updated[idx].get("role") == "user":
+                updated[idx] = self._append_text_to_message(updated[idx], budget_text)
+                return updated
+        return messages
+
+    def _append_budget_to_text(self, text: str | None, agent_data: AgentData) -> str:
+        budget_text = self._remaining_budget_text(agent_data)
+        base = str(text or "").rstrip()
+        if not budget_text:
+            return base
+        return f"{base}\n\n{budget_text}" if base else budget_text
 
     async def _handle_generating_state(
         self, agent_data: AgentData, sampling_params: dict[str, Any], ignore_termination: bool = False
@@ -156,7 +228,7 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
         )
         schemas = None if self._legacy_grounding_mode() else self._active_tool_schemas(agent_data)
         prompt_ids = await self.apply_chat_template(
-            agent_data.messages,
+            self._messages_with_initial_budget(agent_data.messages),
             tools=schemas,
             images=agent_data.image_data,
             videos=agent_data.video_data,
@@ -192,10 +264,14 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
             if tool_response.image:
                 observation_id = len(agent_data.image_data or []) + len(new_images_this_turn)
                 text = self._build_legacy_grounding_observation_text(agent_data.assistant_turns, observation_id)
+                text = self._append_budget_to_text(text, agent_data)
                 add_messages.append({"role": "user", "content": [{"type": "text", "text": text}, {"type": "image"}]})
                 new_images_this_turn.extend([img for img in tool_response.image if img is not None])
             else:
-                error_text = tool_response.text or "ERROR occurs during grounding."
+                error_text = self._append_budget_to_text(
+                    tool_response.text or "ERROR occurs during grounding.",
+                    agent_data,
+                )
                 add_messages.append(
                     {
                         "role": "user",
@@ -259,14 +335,18 @@ class MiniO3ToolAgentLoop(ToolAgentLoop):
 
         for tool_call, (tool_response, tool_reward, tool_metrics) in zip(executed_tool_calls, responses, strict=True):
             self._record_tool_interaction(agent_data, tool_call, tool_response, tool_reward, tool_metrics)
+            visible_text = self._append_budget_to_text(tool_response.text, agent_data)
             if tool_response.image:
                 content: list[dict[str, Any]] = [{"type": "image"}]
-                if tool_response.text:
-                    content.append({"type": "text", "text": tool_response.text})
+                if visible_text:
+                    content.append({"type": "text", "text": visible_text})
                 add_messages.append({"role": "tool", "content": content})
                 new_images_this_turn.extend([img for img in tool_response.image if img is not None])
             else:
-                error_text = tool_response.text or "ERROR occurs during tool execution."
+                error_text = self._append_budget_to_text(
+                    tool_response.text or "ERROR occurs during tool execution.",
+                    agent_data,
+                )
                 add_messages.append({"role": "tool", "content": error_text})
 
             if tool_reward is not None:

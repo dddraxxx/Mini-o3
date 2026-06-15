@@ -82,6 +82,7 @@ VAL_TEMPERATURE=${VAL_TEMPERATURE:-0}
 VAL_TOP_P=${VAL_TOP_P:-1.0}
 VAL_TOP_K=${VAL_TOP_K:--1}
 ADD_VISION_ID=${ADD_VISION_ID:-True}
+MINIO3_SHOW_BUDGET=${MINIO3_SHOW_BUDGET:-False}
 
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
 TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-}
@@ -208,6 +209,7 @@ ROLLOUT=(
     actor_rollout_ref.rollout.multi_turn.format=${ROLLOUT_MULTI_TURN_FORMAT}
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=${MAX_ASSISTANT_TURNS}
     actor_rollout_ref.rollout.multi_turn.max_user_turns=${MAX_USER_TURNS}
+    actor_rollout_ref.rollout.multi_turn.show_budget=${MINIO3_SHOW_BUDGET}
     actor_rollout_ref.rollout.multi_turn.max_parallel_calls=1
     actor_rollout_ref.rollout.multi_turn.tokenization_sanity_check_mode=ignore_strippable
     actor_rollout_ref.rollout.agent.default_agent_loop=${ROLLOUT_AGENT_LOOP}

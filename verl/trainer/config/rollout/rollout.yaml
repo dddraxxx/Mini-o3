@@ -182,6 +182,9 @@ multi_turn:
   # null for no limit (default max_length // 3)
   max_assistant_turns: null
 
+  # Whether to append concise remaining turn/token budget text to Mini-o3 tool observations.
+  show_budget: False
+
   # YAML config for stateful tools that subclass ``BaseTool``.
   # Use this when a tool needs per-trajectory state, async ``create``/``release``
   # lifecycle hooks, or custom rewards.
