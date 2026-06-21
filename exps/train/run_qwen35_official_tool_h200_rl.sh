@@ -70,7 +70,8 @@ USER_FORWARD_VARS=(
   REF_PARAM_OFFLOAD LORA_RANK LORA_ALPHA LORA_TARGET_MODULES \
   GPU_MONITOR_ENABLE GPU_MONITOR_INTERVAL GPU_MONITOR_BACKEND GPU_MONITOR_SAMPLE_TIMEOUT \
   GPU_MONITOR_PATH PERF_DEBUG_SUMMARY_ENABLE PERF_DEBUG_SUMMARY_PATH RAY_INCLUDE_DASHBOARD \
-  MINIO3_RAY_STARTUP_RETRIES MINIO3_RAY_STARTUP_RETRY_DELAY_S
+  MINIO3_RAY_STARTUP_RETRIES MINIO3_RAY_STARTUP_RETRY_DELAY_S \
+  MINIO3_LB_ACQUIRE_RETRIES MINIO3_LB_ACQUIRE_RETRY_BASE_S MINIO3_LB_ACQUIRE_RETRY_MAX_S
 )
 
 declare -A USER_SET
@@ -161,6 +162,9 @@ export MINIO3_STAGE_LOG=${MINIO3_STAGE_LOG:-1}
 export MINIO3_TRAJ_STATUS_INTERVAL_S=${MINIO3_TRAJ_STATUS_INTERVAL_S:-15}
 export MINIO3_RAY_STARTUP_RETRIES=${MINIO3_RAY_STARTUP_RETRIES:-2}
 export MINIO3_RAY_STARTUP_RETRY_DELAY_S=${MINIO3_RAY_STARTUP_RETRY_DELAY_S:-15}
+export MINIO3_LB_ACQUIRE_RETRIES=${MINIO3_LB_ACQUIRE_RETRIES:-6}
+export MINIO3_LB_ACQUIRE_RETRY_BASE_S=${MINIO3_LB_ACQUIRE_RETRY_BASE_S:-0.5}
+export MINIO3_LB_ACQUIRE_RETRY_MAX_S=${MINIO3_LB_ACQUIRE_RETRY_MAX_S:-8}
 
 export MINIO3_TOOL_PROMPT_SUITE=${MINIO3_TOOL_PROMPT_SUITE:-qwen35_official_zoom_tool_final_sentence}
 export MINIO3_OFFICIAL_TOOL_NAME=${MINIO3_OFFICIAL_TOOL_NAME:-image_zoom_in_tool}
@@ -310,6 +314,7 @@ if [[ "${MINIO3_PRINT_CONFIG_ONLY:-0}" == "1" ]]; then
     GPU_MONITOR_ENABLE GPU_MONITOR_INTERVAL GPU_MONITOR_BACKEND GPU_MONITOR_SAMPLE_TIMEOUT \
     GPU_MONITOR_PATH PERF_DEBUG_SUMMARY_ENABLE PERF_DEBUG_SUMMARY_PATH RAY_INCLUDE_DASHBOARD \
     MINIO3_RAY_STARTUP_RETRIES MINIO3_RAY_STARTUP_RETRY_DELAY_S \
+    MINIO3_LB_ACQUIRE_RETRIES MINIO3_LB_ACQUIRE_RETRY_BASE_S MINIO3_LB_ACQUIRE_RETRY_MAX_S \
     OMP_NUM_THREADS MKL_NUM_THREADS OPENBLAS_NUM_THREADS NUMEXPR_NUM_THREADS; do
     printf '%s=%s\n' "$name" "${!name-}"
   done
@@ -323,10 +328,18 @@ ray_startup_failure_seen() {
     'Runtime Env Agent timed out|Raylet could not connect to Runtime Env Agent|Failed to register worker to Raylet|runtime_env_agent'
 }
 
+path_newer_than() {
+  local path=$1
+  local start_epoch=${2:-0}
+  [[ -e "$path" ]] || return 1
+  (( $(stat -c '%Y' "$path") >= start_epoch ))
+}
+
 training_has_started() {
-  [[ -s "$RUN_DIR/train_step_metrics.jsonl" ]] && return 0
-  [[ -s "$RUN_DIR/train_samples.jsonl" ]] && return 0
-  if [[ -d "$RUN_DIR/rollout_generations" ]] && find "$RUN_DIR/rollout_generations" -maxdepth 1 -type f -name '*.jsonl' -print -quit | grep -q .; then
+  local start_epoch=${1:-0}
+  [[ -s "$RUN_DIR/train_step_metrics.jsonl" ]] && path_newer_than "$RUN_DIR/train_step_metrics.jsonl" "$start_epoch" && return 0
+  [[ -s "$RUN_DIR/train_samples.jsonl" ]] && path_newer_than "$RUN_DIR/train_samples.jsonl" "$start_epoch" && return 0
+  if [[ -d "$RUN_DIR/rollout_generations" ]] && find "$RUN_DIR/rollout_generations" -maxdepth 1 -type f -name '*.jsonl' -newermt "@$start_epoch" -print -quit | grep -q .; then
     return 0
   fi
   return 1
@@ -344,13 +357,14 @@ TRAIN_CMD=(
 
 attempt=1
 while true; do
+  attempt_start_epoch=$(date +%s)
   log_start_bytes=$(stat -c '%s' "$LOG_PATH" 2>/dev/null || echo 0)
   if "${TRAIN_CMD[@]}"; then
     exit 0
   fi
   status=$?
 
-  if (( attempt >= MINIO3_RAY_STARTUP_RETRIES )) || training_has_started || ! ray_startup_failure_seen "$log_start_bytes"; then
+  if (( attempt >= MINIO3_RAY_STARTUP_RETRIES )) || training_has_started "$attempt_start_epoch" || ! ray_startup_failure_seen "$log_start_bytes"; then
     exit "$status"
   fi
 

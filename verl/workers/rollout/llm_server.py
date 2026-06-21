@@ -70,19 +70,28 @@ class GlobalRequestLoadBalancer:
         self._servers: dict[str, ray.actor.ActorHandle] = dict(servers)
         self._inflight_requests: dict[str, int] = {sid: 0 for sid in servers}
         self._request_id_to_server: LRUCache = LRUCache(maxsize=max_cache_size)
+        self._lease_id_to_server: dict[str, str] = {}
 
-    def acquire_server(self, request_id: str) -> tuple[str, ray.actor.ActorHandle]:
+    def acquire_server(self, request_id: str, lease_id: str | None = None) -> tuple[str, ray.actor.ActorHandle]:
         """Acquire a server for the given request (sticky + least-loaded).
 
         Returns:
             A tuple of ``(server_id, actor_handle)`` in a single atomic call.
         """
+        if lease_id is not None and lease_id in self._lease_id_to_server:
+            server_id = self._lease_id_to_server[lease_id]
+            if server_id in self._servers:
+                return server_id, self._servers[server_id]
+            del self._lease_id_to_server[lease_id]
+
         # Try sticky session first
         if request_id in self._request_id_to_server:
             server_id = self._request_id_to_server[request_id]
             # Check if server is still in the active pool
             if server_id in self._inflight_requests:
                 self._inflight_requests[server_id] += 1
+                if lease_id is not None:
+                    self._lease_id_to_server[lease_id] = server_id
                 return server_id, self._servers[server_id]
             # Server was removed, clear stale cache entry and re-select
             del self._request_id_to_server[request_id]
@@ -94,10 +103,17 @@ class GlobalRequestLoadBalancer:
         server_id = min(self._inflight_requests, key=self._inflight_requests.get)
         self._request_id_to_server[request_id] = server_id
         self._inflight_requests[server_id] += 1
+        if lease_id is not None:
+            self._lease_id_to_server[lease_id] = server_id
         return server_id, self._servers[server_id]
 
-    def release_server(self, server_id: str) -> None:
+    def release_server(self, server_id: str, lease_id: str | None = None) -> None:
         """Release a server after a request completes."""
+        if lease_id is not None:
+            leased_server_id = self._lease_id_to_server.pop(lease_id, None)
+            if leased_server_id is None:
+                return
+            server_id = leased_server_id
         if server_id not in self._inflight_requests:
             return
         if self._inflight_requests[server_id] > 0:
@@ -146,6 +162,7 @@ class GlobalRequestLoadBalancer:
             "total_inflight": sum(self._inflight_requests.values()),
             "active_servers": len(self._inflight_requests),
             "registered_handles": list(self._servers.keys()),
+            "active_leases": len(self._lease_id_to_server),
         }
 
 
@@ -172,14 +189,39 @@ class LLMServerClient:
         self.config = config
         self._load_balancer = load_balancer_handle
 
-    async def _acquire_server(self, request_id: str) -> tuple[str, ray.actor.ActorHandle]:
+    async def _acquire_server(self, request_id: str) -> tuple[str, str, ray.actor.ActorHandle]:
         # Atomic acquire: returns (server_id, handle) in one Ray RPC.
-        return await self._load_balancer.acquire_server.remote(request_id=request_id)
+        # Ray can transiently reject actor calls when an earlier queued seq_no
+        # times out. The lease id makes acquire retries idempotent.
+        lease_id = uuid4().hex
+        retries = max(1, int(os.getenv("MINIO3_LB_ACQUIRE_RETRIES", "6")))
+        base_delay = max(0.0, float(os.getenv("MINIO3_LB_ACQUIRE_RETRY_BASE_S", "0.5")))
+        max_delay = max(base_delay, float(os.getenv("MINIO3_LB_ACQUIRE_RETRY_MAX_S", "8")))
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                server_id, server = await self._load_balancer.acquire_server.remote(
+                    request_id=request_id,
+                    lease_id=lease_id,
+                )
+                return lease_id, server_id, server
+            except ray.exceptions.ActorUnavailableError as exc:
+                last_error = exc
+                if attempt >= retries:
+                    break
+                delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                _stage_log(
+                    f"client.acquire.retry request={request_id[:8]} attempt={attempt + 1}/{retries} "
+                    f"delay={delay:.2f}s error={type(exc).__name__}: {exc}"
+                )
+                await asyncio.sleep(delay)
+        assert last_error is not None
+        raise last_error
 
-    def _release_server(self, server_id: str) -> None:
+    def _release_server(self, server_id: str, lease_id: str | None = None) -> None:
         # Fire-and-forget: release is just a counter decrement, no need to await.
         # Awaiting here risks blocking the finally clause if the LB actor is unresponsive.
-        self._load_balancer.release_server.remote(server_id=server_id)
+        self._load_balancer.release_server.remote(server_id=server_id, lease_id=lease_id)
 
     @rollout_trace_op
     async def generate(
@@ -209,7 +251,7 @@ class LLMServerClient:
             f"client.acquire.start request={request_id[:8]} prompt_len={len(prompt_ids)} "
             f"max_tokens={sampling_params.get('max_tokens', sampling_params.get('max_new_tokens'))}"
         )
-        server_id, server = await self._acquire_server(request_id)
+        lease_id, server_id, server = await self._acquire_server(request_id)
         _stage_log(
             f"client.acquire.end request={request_id[:8]} server={server_id} "
             f"dt={time.monotonic() - t0:.3f}s"
@@ -236,7 +278,7 @@ class LLMServerClient:
             )
             return output
         finally:
-            self._release_server(server_id)
+            self._release_server(server_id, lease_id=lease_id)
             _stage_log(f"client.release request={request_id[:8]} server={server_id}")
 
 
