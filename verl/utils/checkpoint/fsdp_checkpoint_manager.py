@@ -203,8 +203,19 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             for name, tensor in load_file(weights_path, device="cpu").items()
         }
 
-        with self._summon_full_params(writeback=True):
-            load_result = peft_model.load_state_dict(adapter_state_dict, strict=False)
+        if fsdp_version(self.model) == 2:
+            from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+
+            options = StateDictOptions(
+                full_state_dict=True,
+                cpu_offload=True,
+                broadcast_from_rank0=True,
+                strict=False,
+            )
+            load_result = set_model_state_dict(peft_model, adapter_state_dict, options=options)
+        else:
+            with self._summon_full_params(writeback=True):
+                load_result = peft_model.load_state_dict(adapter_state_dict, strict=False)
 
         log_with_rank(
             f"Loaded LoRA adapter from {weights_path}; missing={len(load_result.missing_keys)}, "
